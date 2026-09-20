@@ -21,6 +21,13 @@ func main() {
 
 	var err error
 	switch subcommand {
+	case "keygen":
+		err = handleKeygen(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %s\n", err)
+			os.Exit(1)
+		}
+		return
 	case "version", "--version", "-v":
 		handleVersion()
 		return

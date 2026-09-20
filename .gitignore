@@ -1,1 +1,6 @@
+# Ignore built binaries
 /bin/
+
+# Ignore coverage files
+coverage.out
+coverage.html

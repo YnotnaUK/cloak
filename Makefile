@@ -19,5 +19,13 @@ install:
 test:
 	go test -v ./...
 
+coverage:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+
+coverage-html:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out
+
 clean:
 	rm -rf bin/
