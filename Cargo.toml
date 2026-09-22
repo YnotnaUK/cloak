@@ -12,6 +12,7 @@ secrecy = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 regex = "1.10"
+base64 = "0.22"
 
 [build-dependencies]
 shadow-rs = "0.38"

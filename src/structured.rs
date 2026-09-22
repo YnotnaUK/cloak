@@ -12,26 +12,22 @@ fn is_encrypted(s: &str) -> bool {
     s.starts_with(ENC_PREFIX) && s.ends_with(ENC_SUFFIX)
 }
 
-/// Encrypts a single string value into the ENC[AGE,...] format
+/// Encrypts a single string value into the ENC[AGE,<base64>] format
 fn encrypt_value(
     val_str: &str,
     recipients: &[Recipient],
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let encrypted_armored = crypto::encrypt_bytes(val_str.as_bytes(), recipients)?;
-    // Clean armored string to single-line or tight block inside ENC[...]
-    // For simplicity, we base64-strip newlines or embed directly
-    let clean = encrypted_armored.trim().replace('\n', "\\n");
-    Ok(format!("{}{}{}", ENC_PREFIX, clean, ENC_SUFFIX))
+    let base64_ciphertext = crypto::encrypt_to_base64(val_str.as_bytes(), recipients)?;
+    Ok(format!("{}{}{}", ENC_PREFIX, base64_ciphertext, ENC_SUFFIX))
 }
 
-/// Decrypts a single ENC[AGE,...] string back to its plaintext
+/// Decrypts a single ENC[AGE,<base64>] string back to its plaintext
 fn decrypt_value(
     enc_str: &str,
     identity: &Identity,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let inner = &enc_str[ENC_PREFIX.len()..enc_str.len() - ENC_SUFFIX.len()];
-    let armored = inner.replace("\\n", "\n");
-    let decrypted_bytes = crypto::decrypt_bytes(&armored, identity)?;
+    let inner_base64 = &enc_str[ENC_PREFIX.len()..enc_str.len() - ENC_SUFFIX.len()];
+    let decrypted_bytes = crypto::decrypt_from_base64(inner_base64, identity)?;
     let plaintext = String::from_utf8(decrypted_bytes)?;
     Ok(plaintext)
 }
