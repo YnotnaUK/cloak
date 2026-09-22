@@ -102,3 +102,71 @@ pub fn decrypt_tree(
 
     Ok(())
 }
+
+/// Recursively walks a JSON tree to encrypt values whose keys match the regex
+pub fn encrypt_json_tree(
+    value: &mut serde_json::Value,
+    key_regex: &Regex,
+    recipients: &[Recipient],
+) -> Result<(), Box<dyn std::error::Error>> {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut new_map = serde_json::Map::new();
+
+            for (k, mut v) in map.clone().into_iter() {
+                let should_encrypt = key_regex.is_match(&k);
+
+                if should_encrypt {
+                    if let Some(s) = v.as_str() {
+                        if !is_encrypted(s) {
+                            let enc = encrypt_value(s, recipients)?;
+                            v = serde_json::Value::String(enc);
+                        }
+                    }
+                } else {
+                    encrypt_json_tree(&mut v, key_regex, recipients)?;
+                }
+
+                new_map.insert(k, v);
+            }
+
+            *map = new_map;
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                encrypt_json_tree(item, key_regex, recipients)?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Recursively walks a JSON tree and decrypts any ENC[AGE,...] string values
+pub fn decrypt_json_tree(
+    value: &mut serde_json::Value,
+    identity: &Identity,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (_, v) in map.iter_mut() {
+                decrypt_json_tree(v, identity)?;
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                decrypt_json_tree(item, identity)?;
+            }
+        }
+        serde_json::Value::String(s) => {
+            if is_encrypted(s) {
+                let decrypted = decrypt_value(s, identity)?;
+                *s = decrypted;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}

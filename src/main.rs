@@ -29,9 +29,9 @@ enum Commands {
     /// Generate a new age-compatible key pair
     Keygen,
 
-    /// Encrypt a file (structured in-place for YAML, or full file encryption)
+    /// Encrypt a file (structured in-place for YAML/JSON, or full file encryption)
     Encrypt {
-        /// Modify the file in place instead of creating a .cloak copy
+        /// Modify the file in place instead of creating a new copy
         #[arg(short, long)]
         in_place: bool,
 
@@ -39,7 +39,7 @@ enum Commands {
         file: PathBuf,
     },
 
-    /// Decrypt a file (structured in-place for YAML, or full file decryption)
+    /// Decrypt a file (structured in-place for YAML/JSON, or full file decryption)
     Decrypt {
         /// Modify the file in place
         #[arg(short, long)]
@@ -100,6 +100,14 @@ fn is_yaml(path: &Path) -> bool {
     )
 }
 
+/// Checks if a file path is a JSON file
+fn is_json(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("json")
+    )
+}
+
 fn run_encrypt(path: &PathBuf, in_place: bool) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load config and recipients
     let cloak_config = config::load_config()?;
@@ -114,23 +122,21 @@ fn run_encrypt(path: &PathBuf, in_place: bool) -> Result<(), Box<dyn std::error:
         _ => vec![keys::load_recipient()?],
     };
 
+    // Regex rule for keys to encrypt
+    let default_pattern = "^(password|secret|token|key)$".to_string();
+    let regex_pattern = cloak_config
+        .as_ref()
+        .and_then(|cfg| cfg.rules.first())
+        .and_then(|r| r.encrypted_regex.as_ref())
+        .unwrap_or(&default_pattern);
+    let key_regex = Regex::new(regex_pattern)?;
+
     // 2. Structured YAML mode
     if is_yaml(path) {
         println!("Detected YAML file: running structured encryption");
         let content = fs::read_to_string(path)?;
         let mut yaml_val: serde_yaml::Value = serde_yaml::from_str(&content)?;
 
-        // Find matching key regex rule, or default to all keys matching (password|secret|token|key)
-        let default_pattern = "^(password|secret|token|key)$".to_string();
-        let regex_pattern = cloak_config
-            .as_ref()
-            .and_then(|cfg| cfg.rules.first())
-            .and_then(|r| r.encrypted_regex.as_ref())
-            .unwrap_or(&default_pattern);
-
-        let key_regex = Regex::new(regex_pattern)?;
-
-        // In-place encrypt the YAML tree
         structured::encrypt_tree(&mut yaml_val, &key_regex, &recipients)?;
 
         let out_content = serde_yaml::to_string(&yaml_val)?;
@@ -145,7 +151,28 @@ fn run_encrypt(path: &PathBuf, in_place: bool) -> Result<(), Box<dyn std::error:
         return Ok(());
     }
 
-    // 3. Fallback: Full File Age mode
+    // 3. Structured JSON mode
+    if is_json(path) {
+        println!("Detected JSON file: running structured encryption");
+        let content = fs::read_to_string(path)?;
+        let mut json_val: serde_json::Value = serde_json::from_str(&content)?;
+
+        structured::encrypt_json_tree(&mut json_val, &key_regex, &recipients)?;
+
+        // Pretty-print JSON with 2-space indentation
+        let out_content = serde_json::to_string_pretty(&json_val)?;
+        let out_path = if in_place {
+            path.clone()
+        } else {
+            path.with_extension("enc.json")
+        };
+
+        fs::write(&out_path, out_content)?;
+        println!("Encrypted -> {}", out_path.display());
+        return Ok(());
+    }
+
+    // 4. Fallback: Full File Age mode
     let plaintext = fs::read(path)?;
     let encrypted_armored = crypto::encrypt_bytes(&plaintext, &recipients)?;
     let out_path = path.with_extension(format!(
@@ -181,7 +208,27 @@ fn run_decrypt(path: &PathBuf, in_place: bool) -> Result<(), Box<dyn std::error:
         return Ok(());
     }
 
-    // 2. Fallback: Full File Age mode
+    // 2. Structured JSON mode
+    if is_json(path) {
+        println!("Detected JSON file: running structured decryption");
+        let content = fs::read_to_string(path)?;
+        let mut json_val: serde_json::Value = serde_json::from_str(&content)?;
+
+        structured::decrypt_json_tree(&mut json_val, &identity)?;
+
+        let out_content = serde_json::to_string_pretty(&json_val)?;
+        let out_path = if in_place {
+            path.clone()
+        } else {
+            path.with_extension("dec.json")
+        };
+
+        fs::write(&out_path, out_content)?;
+        println!("Decrypted -> {}", out_path.display());
+        return Ok(());
+    }
+
+    // 3. Fallback: Full File Age mode
     let armored_ciphertext = fs::read_to_string(path)?;
     let decrypted_bytes = crypto::decrypt_bytes(&armored_ciphertext, &identity)?;
     let out_path = path.with_extension("decrypted");
