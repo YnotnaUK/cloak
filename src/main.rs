@@ -1,12 +1,13 @@
 use clap::{Parser, Subcommand};
+use regex::Regex;
 use shadow_rs::shadow;
 use std::fs;
-use std::path::PathBuf;
-use age::x25519::Recipient;
+use std::path::{Path, PathBuf};
 
 mod config;
 mod crypto;
 mod keys;
+mod structured;
 
 shadow!(build);
 
@@ -28,15 +29,23 @@ enum Commands {
     /// Generate a new age-compatible key pair
     Keygen,
 
-    /// Encrypt a file using the local public key
+    /// Encrypt a file (structured in-place for YAML, or full file encryption)
     Encrypt {
+        /// Modify the file in place instead of creating a .cloak copy
+        #[arg(short, long)]
+        in_place: bool,
+
         /// The path to the file you want to encrypt
         file: PathBuf,
     },
 
-    /// Decrypt a file using the local private key
+    /// Decrypt a file (structured in-place for YAML, or full file decryption)
     Decrypt {
-        /// The path to the encrypted file
+        /// Modify the file in place
+        #[arg(short, long)]
+        in_place: bool,
+
+        /// The path to the file you want to decrypt
         file: PathBuf,
     },
 }
@@ -46,7 +55,6 @@ fn main() {
 
     match cli.command {
         Commands::Init => {
-            // 1. Load the local recipient key
             let recipient = match keys::load_recipient() {
                 Ok(r) => r,
                 Err(err) => {
@@ -55,7 +63,6 @@ fn main() {
                 }
             };
 
-            // 2. Create the default .cloak file
             if let Err(err) = config::create_default_config(&recipient.to_string()) {
                 eprintln!("Init error: {}", err);
                 std::process::exit(1);
@@ -69,15 +76,15 @@ fn main() {
             }
         }
 
-        Commands::Encrypt { file } => {
-            if let Err(err) = run_encrypt(&file) {
+        Commands::Encrypt { in_place, file } => {
+            if let Err(err) = run_encrypt(&file, in_place) {
                 eprintln!("Encryption error: {}", err);
                 std::process::exit(1);
             }
         }
 
-        Commands::Decrypt { file } => {
-            if let Err(err) = run_decrypt(&file) {
+        Commands::Decrypt { in_place, file } => {
+            if let Err(err) = run_decrypt(&file, in_place) {
                 eprintln!("Decryption error: {}", err);
                 std::process::exit(1);
             }
@@ -85,49 +92,101 @@ fn main() {
     }
 }
 
-/// Reads the file, encrypts it using recipients from .cloak (or local key fallback)
-fn run_encrypt(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Determine recipients to encrypt to
-    let recipients: Vec<Recipient> = match config::load_config()? {
+/// Checks if a file path is a YAML file
+fn is_yaml(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("yaml") | Some("yml")
+    )
+}
+
+fn run_encrypt(path: &PathBuf, in_place: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Load config and recipients
+    let cloak_config = config::load_config()?;
+    let recipients = match &cloak_config {
         Some(cfg) if !cfg.recipients.is_empty() => {
-            println!("Using recipients defined in .cloak");
             let mut list = Vec::new();
             for r_str in &cfg.recipients {
                 list.push(keys::parse_recipient(r_str)?);
             }
             list
         }
-        _ => {
-            println!("No .cloak found (or no recipients in it); using local key");
-            vec![keys::load_recipient()?]
-        }
+        _ => vec![keys::load_recipient()?],
     };
 
-    // 2. Read plaintext from disk
+    // 2. Structured YAML mode
+    if is_yaml(path) {
+        println!("Detected YAML file: running structured encryption");
+        let content = fs::read_to_string(path)?;
+        let mut yaml_val: serde_yaml::Value = serde_yaml::from_str(&content)?;
+
+        // Find matching key regex rule, or default to all keys matching (password|secret|token|key)
+        let default_pattern = "^(password|secret|token|key)$".to_string();
+        let regex_pattern = cloak_config
+            .as_ref()
+            .and_then(|cfg| cfg.rules.first())
+            .and_then(|r| r.encrypted_regex.as_ref())
+            .unwrap_or(&default_pattern);
+
+        let key_regex = Regex::new(regex_pattern)?;
+
+        // In-place encrypt the YAML tree
+        structured::encrypt_tree(&mut yaml_val, &key_regex, &recipients)?;
+
+        let out_content = serde_yaml::to_string(&yaml_val)?;
+        let out_path = if in_place {
+            path.clone()
+        } else {
+            path.with_extension("enc.yaml")
+        };
+
+        fs::write(&out_path, out_content)?;
+        println!("Encrypted -> {}", out_path.display());
+        return Ok(());
+    }
+
+    // 3. Fallback: Full File Age mode
     let plaintext = fs::read(path)?;
-
-    // 3. Encrypt to all recipients
     let encrypted_armored = crypto::encrypt_bytes(&plaintext, &recipients)?;
-
-    // 4. Write output file
     let out_path = path.with_extension(format!(
         "{}.cloak",
         path.extension().unwrap_or_default().to_str().unwrap_or("")
     ));
     fs::write(&out_path, encrypted_armored)?;
-
     println!("Encrypted -> {}", out_path.display());
+
     Ok(())
 }
 
-fn run_decrypt(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let armored_ciphertext = fs::read_to_string(path)?;
+fn run_decrypt(path: &PathBuf, in_place: bool) -> Result<(), Box<dyn std::error::Error>> {
     let identity = keys::load_identity()?;
-    let decrypted_bytes = crypto::decrypt_bytes(&armored_ciphertext, &identity)?;
 
+    // 1. Structured YAML mode
+    if is_yaml(path) {
+        println!("Detected YAML file: running structured decryption");
+        let content = fs::read_to_string(path)?;
+        let mut yaml_val: serde_yaml::Value = serde_yaml::from_str(&content)?;
+
+        structured::decrypt_tree(&mut yaml_val, &identity)?;
+
+        let out_content = serde_yaml::to_string(&yaml_val)?;
+        let out_path = if in_place {
+            path.clone()
+        } else {
+            path.with_extension("dec.yaml")
+        };
+
+        fs::write(&out_path, out_content)?;
+        println!("Decrypted -> {}", out_path.display());
+        return Ok(());
+    }
+
+    // 2. Fallback: Full File Age mode
+    let armored_ciphertext = fs::read_to_string(path)?;
+    let decrypted_bytes = crypto::decrypt_bytes(&armored_ciphertext, &identity)?;
     let out_path = path.with_extension("decrypted");
     fs::write(&out_path, decrypted_bytes)?;
-
     println!("Decrypted -> {}", out_path.display());
+
     Ok(())
 }

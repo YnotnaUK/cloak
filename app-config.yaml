@@ -1,0 +1,9 @@
+app_name: my-cool-app
+environment: production
+database:
+  host: db.internal.net
+  port: 5432
+  username: postgres
+  password: SuperSecretDatabasePassword123!
+api_tokens:
+  stripe_key: sk_live_9999999999999
