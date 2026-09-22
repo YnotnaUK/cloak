@@ -1,6 +1,3 @@
-# Ignore built binaries
-/bin/
+# Added by cargo
 
-# Ignore coverage files
-coverage.out
-coverage.html
+/target
