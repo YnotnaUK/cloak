@@ -1,28 +1,41 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::env;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 pub const CONFIG_FILE_NAME: &str = ".cloak";
 
-/// A rule specifying which files and which keys to encrypt
-#[derive(Debug, Serialize, Deserialize)]
+/// A rule specifying which files to target and which keys to encrypt
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Rule {
-    /// Regex pattern matching filenames this rule applies to
+    /// Regex pattern matching filenames this rule applies to (e.g. `.*\.yaml$`, `.*\.env$`)
     pub path_regex: String,
 
-    /// Regex pattern matching JSON/YAML keys to encrypt (e.g. ^(password|secret)$)
+    /// Optional regex for JSON/YAML keys. If None, the entire file is encrypted (age mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted_regex: Option<String>,
+}
+
+impl Rule {
+    /// Checks if a file path matches this rule's path_regex
+    pub fn matches_path(&self, path: &Path) -> bool {
+        let path_str = path.to_str().unwrap_or("");
+        if let Ok(re) = Regex::new(&self.path_regex) {
+            re.is_match(path_str)
+        } else {
+            false
+        }
+    }
 }
 
 /// The root structure of the .cloak file
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CloakConfig {
-    /// List of public recipient keys (e.g. age1...) allowed to decrypt
+    /// List of public recipient keys (age1...) allowed to decrypt
     pub recipients: Vec<String>,
 
-    /// Rules for file/key targeting
+    /// Rules for file targeting
     pub rules: Vec<Rule>,
 }
 
@@ -30,7 +43,6 @@ pub struct CloakConfig {
 pub fn create_default_config(public_key: &str) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(CONFIG_FILE_NAME);
 
-    // Prevent accidental overwriting of an existing .cloak file
     if path.exists() {
         return Err(format!(
             "'{}' already exists in this directory. Refusing to overwrite.",
@@ -39,26 +51,28 @@ pub fn create_default_config(public_key: &str) -> Result<(), Box<dyn std::error:
         .into());
     }
 
-    // Build the default configuration struct
+    // Default configuration with examples of both structured and full-file rules
     let config = CloakConfig {
         recipients: vec![public_key.to_string()],
-        rules: vec![Rule {
-            path_regex: ".*".to_string(),
-            encrypted_regex: Some("^(password|secret|token|key)$".to_string()),
-        }],
+        rules: vec![
+            Rule {
+                path_regex: r".*\.(yaml|yml|json)$".to_string(),
+                encrypted_regex: Some("^(password|secret|token|key)$".to_string()),
+            },
+            Rule {
+                path_regex: r".*\.env$".to_string(),
+                encrypted_regex: None, // No encrypted_regex means whole-file encryption
+            },
+        ],
     };
 
-    // Serialize the struct to a clean YAML string
     let yaml_string = serde_yaml::to_string(&config)?;
-
-    // Add a helpful header comment
     let file_content = format!(
-        "# Cloak configuration file\n# Run `cloak encrypt <file>` to encrypt using these recipients\n\n{}",
+        "# Cloak configuration file\n# Run `cloak encrypt` or `cloak decrypt` to process all matching files\n\n{}",
         yaml_string
     );
 
-    // Write to disk
-    std::fs::write(path, file_content)?;
+    fs::write(path, file_content)?;
 
     println!("Initialized configuration in {}", CONFIG_FILE_NAME);
     println!("Added default recipient: {}", public_key);
@@ -76,7 +90,6 @@ pub fn find_config_file() -> Option<PathBuf> {
             return Some(config_path);
         }
 
-        // Move to parent folder; if there is no parent, stop searching
         if !current_dir.pop() {
             break;
         }
@@ -89,7 +102,7 @@ pub fn find_config_file() -> Option<PathBuf> {
 pub fn load_config() -> Result<Option<CloakConfig>, Box<dyn std::error::Error>> {
     let config_path = match find_config_file() {
         Some(path) => path,
-        None => return Ok(None), // Not an error if no config exists, just return None
+        None => return Ok(None),
     };
 
     let content = fs::read_to_string(&config_path)?;

@@ -1,8 +1,10 @@
+use age::x25519::{Identity, Recipient};
 use clap::{Parser, Subcommand};
 use regex::Regex;
 use shadow_rs::shadow;
 use std::fs;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
 mod config;
 mod crypto;
@@ -29,24 +31,18 @@ enum Commands {
     /// Generate a new age-compatible key pair
     Keygen,
 
-    /// Encrypt a file (structured in-place for YAML/JSON, or full file encryption)
+    /// Encrypt a specific file, or all files matching rules in .cloak
+    #[command(alias = "e")]
     Encrypt {
-        /// Modify the file in place instead of creating a new copy
-        #[arg(short, long)]
-        in_place: bool,
-
-        /// The path to the file you want to encrypt
-        file: PathBuf,
+        /// Optional path to a specific file. If omitted, scans all files matching .cloak rules.
+        file: Option<PathBuf>,
     },
 
-    /// Decrypt a file (structured in-place for YAML/JSON, or full file decryption)
+    /// Decrypt a specific file, or all files matching rules in .cloak
+    #[command(alias = "d")]
     Decrypt {
-        /// Modify the file in place
-        #[arg(short, long)]
-        in_place: bool,
-
-        /// The path to the file you want to decrypt
-        file: PathBuf,
+        /// Optional path to a specific file. If omitted, scans all files matching .cloak rules.
+        file: Option<PathBuf>,
     },
 }
 
@@ -76,15 +72,15 @@ fn main() {
             }
         }
 
-        Commands::Encrypt { in_place, file } => {
-            if let Err(err) = run_encrypt(&file, in_place) {
+        Commands::Encrypt { file } => {
+            if let Err(err) = handle_encrypt(file) {
                 eprintln!("Encryption error: {}", err);
                 std::process::exit(1);
             }
         }
 
-        Commands::Decrypt { in_place, file } => {
-            if let Err(err) = run_decrypt(&file, in_place) {
+        Commands::Decrypt { file } => {
+            if let Err(err) = handle_decrypt(file) {
                 eprintln!("Decryption error: {}", err);
                 std::process::exit(1);
             }
@@ -92,148 +88,185 @@ fn main() {
     }
 }
 
-/// Checks if a file path is a YAML file
-fn is_yaml(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|ext| ext.to_str()),
-        Some("yaml") | Some("yml")
-    )
-}
-
-/// Checks if a file path is a JSON file
-fn is_json(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|ext| ext.to_str()),
-        Some("json")
-    )
-}
-
-fn run_encrypt(path: &PathBuf, in_place: bool) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Load config and recipients
-    let cloak_config = config::load_config()?;
-    let recipients = match &cloak_config {
-        Some(cfg) if !cfg.recipients.is_empty() => {
+/// Resolves recipients from .cloak (or falls back to local key)
+fn resolve_recipients(cfg: &Option<config::CloakConfig>) -> Result<Vec<Recipient>, Box<dyn std::error::Error>> {
+    match cfg {
+        Some(c) if !c.recipients.is_empty() => {
             let mut list = Vec::new();
-            for r_str in &cfg.recipients {
+            for r_str in &c.recipients {
                 list.push(keys::parse_recipient(r_str)?);
             }
-            list
+            Ok(list)
         }
-        _ => vec![keys::load_recipient()?],
-    };
-
-    // Regex rule for keys to encrypt
-    let default_pattern = "^(password|secret|token|key)$".to_string();
-    let regex_pattern = cloak_config
-        .as_ref()
-        .and_then(|cfg| cfg.rules.first())
-        .and_then(|r| r.encrypted_regex.as_ref())
-        .unwrap_or(&default_pattern);
-    let key_regex = Regex::new(regex_pattern)?;
-
-    // 2. Structured YAML mode
-    if is_yaml(path) {
-        println!("Detected YAML file: running structured encryption");
-        let content = fs::read_to_string(path)?;
-        let mut yaml_val: serde_yaml::Value = serde_yaml::from_str(&content)?;
-
-        structured::encrypt_tree(&mut yaml_val, &key_regex, &recipients)?;
-
-        let out_content = serde_yaml::to_string(&yaml_val)?;
-        let out_path = if in_place {
-            path.clone()
-        } else {
-            path.with_extension("enc.yaml")
-        };
-
-        fs::write(&out_path, out_content)?;
-        println!("Encrypted -> {}", out_path.display());
-        return Ok(());
+        _ => Ok(vec![keys::load_recipient()?]),
     }
+}
 
-    // 3. Structured JSON mode
-    if is_json(path) {
-        println!("Detected JSON file: running structured encryption");
-        let content = fs::read_to_string(path)?;
-        let mut json_val: serde_json::Value = serde_json::from_str(&content)?;
+fn handle_encrypt(file: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    let cloak_config = config::load_config()?;
+    let recipients = resolve_recipients(&cloak_config)?;
 
-        structured::encrypt_json_tree(&mut json_val, &key_regex, &recipients)?;
+    if let Some(path) = file {
+        // Single file mode
+        encrypt_single_file(&path, &recipients, &cloak_config)?;
+    } else {
+        // Multi-file batch mode driven by .cloak
+        let cfg = cloak_config.ok_or("No .cloak configuration file found. Run `cloak init` first.")?;
+        println!("Scanning directory using .cloak rules...");
 
-        // Pretty-print JSON with 2-space indentation
-        let out_content = serde_json::to_string_pretty(&json_val)?;
-        let out_path = if in_place {
-            path.clone()
-        } else {
-            path.with_extension("enc.json")
-        };
+        for entry in WalkDir::new(".").into_iter().filter_entry(|e| !is_ignored(e)) {
+            let entry = entry?;
+            let path = entry.path();
 
-        fs::write(&out_path, out_content)?;
-        println!("Encrypted -> {}", out_path.display());
-        return Ok(());
+            if path.is_file() {
+                // Check if file matches any rule in .cloak
+                for rule in &cfg.rules {
+                    if rule.matches_path(path) {
+                        println!("-> Encrypting: {}", path.display());
+                        encrypt_with_rule(path, &recipients, rule)?;
+                        break;
+                    }
+                }
+            }
+        }
     }
-
-    // 4. Fallback: Full File Age mode
-    let plaintext = fs::read(path)?;
-    let encrypted_armored = crypto::encrypt_bytes(&plaintext, &recipients)?;
-    let out_path = path.with_extension(format!(
-        "{}.cloak",
-        path.extension().unwrap_or_default().to_str().unwrap_or("")
-    ));
-    fs::write(&out_path, encrypted_armored)?;
-    println!("Encrypted -> {}", out_path.display());
 
     Ok(())
 }
 
-fn run_decrypt(path: &PathBuf, in_place: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_decrypt(file: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let identity = keys::load_identity()?;
+    let cloak_config = config::load_config()?;
 
-    // 1. Structured YAML mode
-    if is_yaml(path) {
-        println!("Detected YAML file: running structured decryption");
-        let content = fs::read_to_string(path)?;
-        let mut yaml_val: serde_yaml::Value = serde_yaml::from_str(&content)?;
+    if let Some(path) = file {
+        decrypt_single_file(&path, &identity, &cloak_config)?;
+    } else {
+        let cfg = cloak_config.ok_or("No .cloak configuration file found. Run `cloak init` first.")?;
+        println!("Scanning directory using .cloak rules...");
 
-        structured::decrypt_tree(&mut yaml_val, &identity)?;
+        for entry in WalkDir::new(".").into_iter().filter_entry(|e| !is_ignored(e)) {
+            let entry = entry?;
+            let path = entry.path();
 
-        let out_content = serde_yaml::to_string(&yaml_val)?;
-        let out_path = if in_place {
-            path.clone()
-        } else {
-            path.with_extension("dec.yaml")
-        };
-
-        fs::write(&out_path, out_content)?;
-        println!("Decrypted -> {}", out_path.display());
-        return Ok(());
+            if path.is_file() {
+                for rule in &cfg.rules {
+                    if rule.matches_path(path) {
+                        println!("-> Decrypting: {}", path.display());
+                        decrypt_with_rule(path, &identity, rule)?;
+                        break;
+                    }
+                }
+            }
+        }
     }
-
-    // 2. Structured JSON mode
-    if is_json(path) {
-        println!("Detected JSON file: running structured decryption");
-        let content = fs::read_to_string(path)?;
-        let mut json_val: serde_json::Value = serde_json::from_str(&content)?;
-
-        structured::decrypt_json_tree(&mut json_val, &identity)?;
-
-        let out_content = serde_json::to_string_pretty(&json_val)?;
-        let out_path = if in_place {
-            path.clone()
-        } else {
-            path.with_extension("dec.json")
-        };
-
-        fs::write(&out_path, out_content)?;
-        println!("Decrypted -> {}", out_path.display());
-        return Ok(());
-    }
-
-    // 3. Fallback: Full File Age mode
-    let armored_ciphertext = fs::read_to_string(path)?;
-    let decrypted_bytes = crypto::decrypt_bytes(&armored_ciphertext, &identity)?;
-    let out_path = path.with_extension("decrypted");
-    fs::write(&out_path, decrypted_bytes)?;
-    println!("Decrypted -> {}", out_path.display());
 
     Ok(())
+}
+
+/// Skips target, .git, etc.
+fn is_ignored(entry: &walkdir::DirEntry) -> bool {
+    entry.file_name()
+        .to_str()
+        .map(|s| s == "target" || s == ".git" || s == ".cloak")
+        .unwrap_or(false)
+}
+
+fn encrypt_with_rule(
+    path: &Path,
+    recipients: &[Recipient],
+    rule: &config::Rule,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    match ext {
+        "yaml" | "yml" => {
+            let content = fs::read_to_string(path)?;
+            let mut val: serde_yaml::Value = serde_yaml::from_str(&content)?;
+            let pattern = rule.encrypted_regex.as_deref().unwrap_or(".*");
+            let key_regex = Regex::new(pattern)?;
+
+            structured::encrypt_tree(&mut val, &key_regex, recipients)?;
+            fs::write(path, serde_yaml::to_string(&val)?)?;
+        }
+        "json" => {
+            let content = fs::read_to_string(path)?;
+            let mut val: serde_json::Value = serde_json::from_str(&content)?;
+            let pattern = rule.encrypted_regex.as_deref().unwrap_or(".*");
+            let key_regex = Regex::new(pattern)?;
+
+            structured::encrypt_json_tree(&mut val, &key_regex, recipients)?;
+            fs::write(path, serde_json::to_string_pretty(&val)?)?;
+        }
+        _ => {
+            // Full file encryption for raw files
+            let plaintext = fs::read(path)?;
+            let encrypted = crypto::encrypt_bytes(&plaintext, recipients)?;
+            fs::write(path, encrypted)?;
+        }
+    }
+    Ok(())
+}
+
+fn decrypt_with_rule(
+    path: &Path,
+    identity: &Identity,
+    _rule: &config::Rule,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    match ext {
+        "yaml" | "yml" => {
+            let content = fs::read_to_string(path)?;
+            let mut val: serde_yaml::Value = serde_yaml::from_str(&content)?;
+            structured::decrypt_tree(&mut val, identity)?;
+            fs::write(path, serde_yaml::to_string(&val)?)?;
+        }
+        "json" => {
+            let content = fs::read_to_string(path)?;
+            let mut val: serde_json::Value = serde_json::from_str(&content)?;
+            structured::decrypt_json_tree(&mut val, identity)?;
+            fs::write(path, serde_json::to_string_pretty(&val)?)?;
+        }
+        _ => {
+            // Full file decryption for raw files
+            let armored = fs::read_to_string(path)?;
+            let decrypted = crypto::decrypt_bytes(&armored, identity)?;
+            fs::write(path, decrypted)?;
+        }
+    }
+    Ok(())
+}
+
+fn encrypt_single_file(
+    path: &Path,
+    recipients: &[Recipient],
+    cfg: &Option<config::CloakConfig>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let default_rule = config::Rule {
+        path_regex: ".*".to_string(),
+        encrypted_regex: Some("^(password|secret|token|key)$".to_string()),
+    };
+
+    let rule = cfg.as_ref()
+        .and_then(|c| c.rules.iter().find(|r| r.matches_path(path)))
+        .unwrap_or(&default_rule);
+
+    encrypt_with_rule(path, recipients, rule)
+}
+
+fn decrypt_single_file(
+    path: &Path,
+    identity: &Identity,
+    cfg: &Option<config::CloakConfig>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let default_rule = config::Rule {
+        path_regex: ".*".to_string(),
+        encrypted_regex: Some("^(password|secret|token|key)$".to_string()),
+    };
+
+    let rule = cfg.as_ref()
+        .and_then(|c| c.rules.iter().find(|r| r.matches_path(path)))
+        .unwrap_or(&default_rule);
+
+    decrypt_with_rule(path, identity, rule)
 }
