@@ -2,7 +2,9 @@ use clap::{Parser, Subcommand};
 use shadow_rs::shadow;
 use std::fs;
 use std::path::PathBuf;
+use age::x25519::Recipient;
 
+mod config;
 mod crypto;
 mod keys;
 
@@ -20,6 +22,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Initialize a .cloak config file in the current directory
+    Init,
+
     /// Generate a new age-compatible key pair
     Keygen,
 
@@ -40,6 +45,23 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init => {
+            // 1. Load the local recipient key
+            let recipient = match keys::load_recipient() {
+                Ok(r) => r,
+                Err(err) => {
+                    eprintln!("Error loading key: {}\nHave you run `cloak keygen`?", err);
+                    std::process::exit(1);
+                }
+            };
+
+            // 2. Create the default .cloak file
+            if let Err(err) = config::create_default_config(&recipient.to_string()) {
+                eprintln!("Init error: {}", err);
+                std::process::exit(1);
+            }
+        }
+
         Commands::Keygen => {
             if let Err(err) = keys::generate_key() {
                 eprintln!("Error: {}", err);
@@ -63,18 +85,31 @@ fn main() {
     }
 }
 
-/// Reads the file, encrypts it, and writes out a .cloak file
+/// Reads the file, encrypts it using recipients from .cloak (or local key fallback)
 fn run_encrypt(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Read plaintext from disk
+    // 1. Determine recipients to encrypt to
+    let recipients: Vec<Recipient> = match config::load_config()? {
+        Some(cfg) if !cfg.recipients.is_empty() => {
+            println!("Using recipients defined in .cloak");
+            let mut list = Vec::new();
+            for r_str in &cfg.recipients {
+                list.push(keys::parse_recipient(r_str)?);
+            }
+            list
+        }
+        _ => {
+            println!("No .cloak found (or no recipients in it); using local key");
+            vec![keys::load_recipient()?]
+        }
+    };
+
+    // 2. Read plaintext from disk
     let plaintext = fs::read(path)?;
 
-    // 2. Load the public key from our config directory
-    let recipient = keys::load_recipient()?;
+    // 3. Encrypt to all recipients
+    let encrypted_armored = crypto::encrypt_bytes(&plaintext, &recipients)?;
 
-    // 3. Encrypt the data
-    let encrypted_armored = crypto::encrypt_bytes(&plaintext, &recipient)?;
-
-    // 4. Save to a new file named <original>.cloak
+    // 4. Write output file
     let out_path = path.with_extension(format!(
         "{}.cloak",
         path.extension().unwrap_or_default().to_str().unwrap_or("")
@@ -85,18 +120,11 @@ fn run_encrypt(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Reads the .cloak file, decrypts it, and writes the plaintext
 fn run_decrypt(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Read armored ciphertext from disk
     let armored_ciphertext = fs::read_to_string(path)?;
-
-    // 2. Load the private key from our config directory
     let identity = keys::load_identity()?;
-
-    // 3. Decrypt the data
     let decrypted_bytes = crypto::decrypt_bytes(&armored_ciphertext, &identity)?;
 
-    // 4. Save to a restored file name (or print to stdout)
     let out_path = path.with_extension("decrypted");
     fs::write(&out_path, decrypted_bytes)?;
 

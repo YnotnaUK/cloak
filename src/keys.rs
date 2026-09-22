@@ -3,6 +3,7 @@ use age::x25519::{Identity, Recipient};
 use std::fs::{self, File};
 use std::io::{BufReader, Write};
 use std::path::PathBuf;
+use std::str::FromStr;
 
 /// Determines the standard config directory: ~/.config/cloak/
 fn get_config_dir() -> Result<PathBuf, String> {
@@ -98,4 +99,9 @@ pub fn load_identity() -> Result<Identity, Box<dyn std::error::Error>> {
 pub fn load_recipient() -> Result<Recipient, Box<dyn std::error::Error>> {
     let identity = load_identity()?;
     Ok(identity.to_public())
+}
+
+/// Converts a recipient string (e.g. "age1...") into an age Recipient
+pub fn parse_recipient(s: &str) -> Result<Recipient, Box<dyn std::error::Error>> {
+    Recipient::from_str(s).map_err(|e| format!("Invalid recipient '{}': {}", s, e).into())
 }
