@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -15,7 +16,13 @@ func main() {
 
 	switch os.Args[1] {
 	case "keygen":
-		pubKey, path, err := keys.Generate()
+		keygenCmd := flag.NewFlagSet("keygen", flag.ExitOnError)
+		force := keygenCmd.Bool("force", false, "Overwrite existing key file")
+		keygenCmd.BoolVar(force, "f", false, "Overwrite existing key file (shorthand)")
+
+		keygenCmd.Parse(os.Args[2:])
+
+		pubKey, path, err := keys.Generate(*force)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -31,7 +38,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println("Usage: cloak <command>")
+	fmt.Println("Usage: cloak <command> [options]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  keygen    Generate a new X25519 identity keypair")
+	fmt.Println("  keygen [-f|--force]    Generate a new X25519 identity keypair")
 }

@@ -11,8 +11,7 @@ import (
 )
 
 // Generate creates a new X25519 keypair and writes it to disk.
-// Returns an error if the key file already exists.
-func Generate() (string, string, error) {
+func Generate(force bool) (string, string, error) {
 	curve := ecdh.X25519()
 	privKey, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
@@ -32,11 +31,17 @@ func Generate() (string, string, error) {
 
 	keyFilePath := filepath.Join(cloakDir, "key.txt")
 
-	// os.O_EXCL causes OpenFile to fail if the file already exists
-	f, err := os.OpenFile(keyFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	flags := os.O_WRONLY | os.O_CREATE
+	if force {
+		flags |= os.O_TRUNC
+	} else {
+		flags |= os.O_EXCL
+	}
+
+	f, err := os.OpenFile(keyFilePath, flags, 0600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return "", "", fmt.Errorf("key file already exists at %s (use a force flag or remove it manually)", keyFilePath)
+			return "", "", fmt.Errorf("key file already exists at %s (use -f or --force to overwrite)", keyFilePath)
 		}
 		return "", "", fmt.Errorf("failed to create key file: %w", err)
 	}
