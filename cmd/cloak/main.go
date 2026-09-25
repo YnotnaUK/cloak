@@ -148,9 +148,6 @@ func main() {
 				os.Exit(1)
 			}
 
-		case "version":
-			fmt.Printf("cloak %s (commit: %s, built at: %s)\n", Version, Commit, Date)
-
 		default:
 			fmt.Println("Usage: cloak recipient <list|add|remove> [key]")
 			os.Exit(1)
@@ -173,6 +170,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+
+	case "version":
+		fmt.Printf("cloak %s (commit: %s, built at: %s)\n", Version, Commit, Date)
 
 	default:
 		printUsage()
