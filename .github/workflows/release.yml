@@ -12,10 +12,10 @@ jobs:
       contents: write # Needed to create releases
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: 'stable'
 
@@ -35,7 +35,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="v0.1.$(date +'%Y%m%d%H%M%S')"
+          TAG_NAME="v0.2.$(date +'%Y%m%d%H%M%S')"
           gh release create "$TAG_NAME" dist/* \
             --title "Release $TAG_NAME" \
             --generate-notes
+
+      - name: Prune Old Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Fetch releases beyond the newest 20 and delete them
+          gh release list --limit 100 --json tagName --jq '.[20:][].tagName' | while read -r old_tag; do
+            if [ -n "$old_tag" ]; then
+              echo "Pruning old release: $old_tag"
+              gh release delete "$old_tag" --yes --cleanup-tag
+            fi
+          done
