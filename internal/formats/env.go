@@ -24,7 +24,8 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 
 		// Preserve comments and empty lines
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") || !strings.Contains(line, "=") {
-			out.WriteString(line + "\n")
+			out.WriteString(line)
+			out.WriteByte('\n')
 			continue
 		}
 
@@ -37,9 +38,13 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 			if err != nil {
 				return nil, fmt.Errorf("failed encrypting key %s: %w", k, err)
 			}
-			out.WriteString(fmt.Sprintf("%s=%s\n", k, encVal))
+			out.WriteString(k)
+			out.WriteByte('=')
+			out.WriteString(encVal)
+			out.WriteByte('\n')
 		} else {
-			out.WriteString(line + "\n")
+			out.WriteString(line)
+			out.WriteByte('\n')
 		}
 	}
 
@@ -55,7 +60,8 @@ func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, e
 		trimmed := strings.TrimSpace(line)
 
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") || !strings.Contains(line, "=") {
-			out.WriteString(line + "\n")
+			out.WriteString(line)
+			out.WriteByte('\n')
 			continue
 		}
 
@@ -69,9 +75,13 @@ func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, e
 			if err != nil {
 				return nil, fmt.Errorf("failed decrypting key %s: %w", k, err)
 			}
-			out.WriteString(fmt.Sprintf("%s=%s\n", k, string(decVal)))
+			out.WriteString(k)
+			out.WriteByte('=')
+			out.Write(decVal)
+			out.WriteByte('\n')
 		} else {
-			out.WriteString(line + "\n")
+			out.WriteString(line)
+			out.WriteByte('\n')
 		}
 	}
 
