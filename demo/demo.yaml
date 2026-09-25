@@ -1,0 +1,4 @@
+app: demo
+password: top_secret_yaml_pass
+token: yaml_auth_token
+replicas: 3
