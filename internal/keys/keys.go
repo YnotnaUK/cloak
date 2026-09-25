@@ -83,3 +83,27 @@ func ReadPublicKey() (string, error) {
 
 	return "", errors.New("public key not found in key file")
 }
+
+// ReadPrivateKey extracts the private key hex from the key file.
+func ReadPrivateKey() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config dir: %w", err)
+	}
+
+	keyFilePath := filepath.Join(configDir, "cloak", "key.txt")
+	data, err := os.ReadFile(keyFilePath)
+	if err != nil {
+		return "", fmt.Errorf("could not read key file: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line, nil
+		}
+	}
+
+	return "", errors.New("private key not found in key file")
+}

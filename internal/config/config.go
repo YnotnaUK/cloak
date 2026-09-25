@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,12 +15,13 @@ const ConfigFileName = ".cloak.yaml"
 
 type Rule struct {
 	PathRegex     string   `yaml:"path_regex"`
-	Type          string   `yaml:"type"` // "full", "yaml", "json", "env"
+	Type          string   `yaml:"type"`
 	EncryptedKeys []string `yaml:"encrypted_keys,omitempty"`
 }
 
 type Config struct {
 	Recipients []string `yaml:"recipients"`
+	Exclude    []string `yaml:"exclude"`
 	Rules      []Rule   `yaml:"rules"`
 }
 
@@ -41,26 +44,18 @@ func Init(pubKey string, force bool) error {
 
 	cfg := Config{
 		Recipients: []string{pubKey},
+		Exclude: []string{
+			".git",
+			"node_modules",
+			"bin",
+			"coverage",
+			ConfigFileName,
+		},
 		Rules: []Rule{
-			{
-				PathRegex: `.*\.secret$`,
-				Type:      "full",
-			},
-			{
-				PathRegex:     `.*\.ya?ml$`,
-				Type:          "yaml",
-				EncryptedKeys: []string{"password", "secret", "token"},
-			},
-			{
-				PathRegex:     `.*\.json$`,
-				Type:          "json",
-				EncryptedKeys: []string{"password", "secret", "token"},
-			},
-			{
-				PathRegex:     `.*\.env$`,
-				Type:          "env",
-				EncryptedKeys: []string{"PASSWORD", "SECRET_KEY"},
-			},
+			{PathRegex: `.*\.secret$`, Type: "full"},
+			{PathRegex: `.*\.ya?ml$`, Type: "yaml", EncryptedKeys: []string{"password", "secret", "token"}},
+			{PathRegex: `.*\.json$`, Type: "json", EncryptedKeys: []string{"password", "secret", "token"}},
+			{PathRegex: `.*\.env$`, Type: "env", EncryptedKeys: []string{"PASSWORD", "SECRET_KEY"}},
 		},
 	}
 
@@ -69,7 +64,6 @@ func Init(pubKey string, force bool) error {
 	return encoder.Encode(cfg)
 }
 
-// Load reads and parses .cloak.yaml from the current directory.
 func Load() (*Config, error) {
 	data, err := os.ReadFile(ConfigFileName)
 	if err != nil {
@@ -84,16 +78,25 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
-// FindRule matches a file path against configured rules in order.
-func (c *Config) FindRule(path string) (*Rule, error) {
-	for _, rule := range c.Rules {
-		matched, err := regexp.MatchString(rule.PathRegex, path)
-		if err != nil {
-			return nil, fmt.Errorf("invalid regex %q: %w", rule.PathRegex, err)
-		}
-		if matched {
-			return &rule, nil
+func (c *Config) IsExcluded(path string) bool {
+	cleanPath := filepath.Clean(path)
+	parts := strings.Split(cleanPath, string(filepath.Separator))
+	for _, part := range parts {
+		for _, exc := range c.Exclude {
+			if part == exc {
+				return true
+			}
 		}
 	}
-	return nil, fmt.Errorf("no rule found matching path %q", path)
+	return false
+}
+
+func (c *Config) FindRule(path string) *Rule {
+	for _, rule := range c.Rules {
+		matched, _ := regexp.MatchString(rule.PathRegex, path)
+		if matched {
+			return &rule
+		}
+	}
+	return nil
 }

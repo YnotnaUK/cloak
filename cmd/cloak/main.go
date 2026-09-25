@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/ynotnauk/cloak/internal/config"
+	"github.com/ynotnauk/cloak/internal/engine"
 	"github.com/ynotnauk/cloak/internal/keys"
 )
 
@@ -14,6 +15,8 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+
+	engine.SetKeyLoader(keys.ReadPrivateKey)
 
 	switch os.Args[1] {
 	case "keygen":
@@ -49,6 +52,18 @@ func main() {
 		}
 		fmt.Printf("Initialized %s with public key: %s\n", config.ConfigFileName, pubKey)
 
+	case "encrypt":
+		if err := engine.Process(false); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "decrypt":
+		if err := engine.Process(true); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		printUsage()
 		os.Exit(1)
@@ -58,6 +73,8 @@ func main() {
 func printUsage() {
 	fmt.Println("Usage: cloak <command> [options]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  keygen [-f|--force]    Generate a new X25519 identity keypair")
-	fmt.Println("  init   [-f|--force]    Create a .cloak.yaml config file")
+	fmt.Println("  keygen   [-f|--force]    Generate a new X25519 identity keypair")
+	fmt.Println("  init     [-f|--force]    Create a .cloak.yaml config file")
+	fmt.Println("  encrypt                  Encrypt all matching project files in-place")
+	fmt.Println("  decrypt                  Decrypt all matching project files in-place")
 }
