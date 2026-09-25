@@ -1,0 +1,16 @@
+# Binaries
+bin/
+cloak
+
+# Coverage and test artifacts
+coverage/
+*.out
+*.test
+
+# OS & Editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
