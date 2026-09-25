@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+
+	"github.com/ynotnauk/cloak/internal/crypto"
 )
 
 type EnvFormatter struct{}
@@ -35,7 +37,7 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 
 		if keySet[k] {
 			trimmedVal := strings.TrimSpace(v)
-			if strings.HasPrefix(trimmedVal, "CLOAK:v1:") {
+			if strings.HasPrefix(trimmedVal, crypto.Prefix) {
 				out.WriteString(line)
 				out.WriteByte('\n')
 				continue
@@ -77,7 +79,7 @@ func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, e
 		v := parts[1]
 
 		// Attempt decrypt if it looks encrypted
-		if strings.HasPrefix(v, "CLOAK:v1:") {
+		if strings.HasPrefix(v, crypto.Prefix) {
 			decVal, err := decryptFn(v)
 			if err != nil {
 				return nil, fmt.Errorf("failed decrypting key %s: %w", k, err)

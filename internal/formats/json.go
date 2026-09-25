@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/ynotnauk/cloak/internal/crypto"
 )
 
 type JsonFormatter struct{}
@@ -48,7 +50,7 @@ func walkMapEncrypt(m map[string]any, keys map[string]bool, encryptFn func([]byt
 			}
 		case string:
 			if keys[k] {
-				if strings.HasPrefix(val, "CLOAK:v1:") {
+				if strings.HasPrefix(val, crypto.Prefix) {
 					continue // Already encrypted
 				}
 				enc, err := encryptFn([]byte(val))
@@ -78,7 +80,7 @@ func walkMapDecrypt(m map[string]any, decryptFn func(string) ([]byte, error)) er
 				return err
 			}
 		case string:
-			if strings.HasPrefix(val, "CLOAK:v1:") {
+			if strings.HasPrefix(val, crypto.Prefix) {
 				dec, err := decryptFn(val)
 				if err != nil {
 					return fmt.Errorf("failed decrypting key %s: %w", k, err)

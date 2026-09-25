@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ynotnauk/cloak/internal/crypto"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,7 +62,7 @@ func walkYamlEncrypt(node *yaml.Node, keys map[string]bool, encryptFn func([]byt
 			valNode := node.Content[i+1]
 
 			if keys[keyNode.Value] && valNode.Kind == yaml.ScalarNode {
-				if strings.HasPrefix(valNode.Value, "CLOAK:v1:") {
+				if strings.HasPrefix(valNode.Value, crypto.Prefix) {
 					continue // Already encrypted
 				}
 
@@ -92,7 +93,7 @@ func walkYamlDecrypt(node *yaml.Node, decryptFn func(string) ([]byte, error)) er
 	case yaml.MappingNode:
 		for i := 0; i < len(node.Content); i += 2 {
 			valNode := node.Content[i+1]
-			if valNode.Kind == yaml.ScalarNode && strings.HasPrefix(valNode.Value, "CLOAK:v1:") {
+			if valNode.Kind == yaml.ScalarNode && strings.HasPrefix(valNode.Value, crypto.Prefix) {
 				dec, err := decryptFn(valNode.Value)
 				if err != nil {
 					return err

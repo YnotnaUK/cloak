@@ -11,6 +11,12 @@ import (
 	"github.com/ynotnauk/cloak/internal/formats"
 )
 
+var cryptoPrivateKeyLoader func() (string, error)
+
+func SetKeyLoader(loader func() (string, error)) {
+	cryptoPrivateKeyLoader = loader
+}
+
 func Process(decrypt bool) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -23,11 +29,6 @@ func Process(decrypt bool) error {
 		if err != nil {
 			return err
 		}
-	}
-
-	recipient := ""
-	if !decrypt && len(cfg.Recipients) > 0 {
-		recipient = cfg.Recipients[0]
 	}
 
 	return filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
@@ -53,7 +54,7 @@ func Process(decrypt bool) error {
 
 		formatter, err := formats.Get(rule.Type)
 		if err != nil {
-			return nil // skip unsupported formats for now
+			return nil
 		}
 
 		content, err := os.ReadFile(path)
@@ -68,7 +69,7 @@ func Process(decrypt bool) error {
 			})
 		} else {
 			processed, err = formatter.Encrypt(content, rule.EncryptedKeys, func(b []byte) (string, error) {
-				return crypto.Encrypt(b, recipient)
+				return crypto.Encrypt(b, cfg.Recipients)
 			})
 		}
 
@@ -92,11 +93,4 @@ func Process(decrypt bool) error {
 		fmt.Printf("%s: %s\n", action, path)
 		return nil
 	})
-}
-
-// Hook to read private key without circular dependencies
-var cryptoPrivateKeyLoader func() (string, error)
-
-func SetKeyLoader(loader func() (string, error)) {
-	cryptoPrivateKeyLoader = loader
 }

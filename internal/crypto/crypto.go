@@ -7,127 +7,210 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 )
 
-const Prefix = "CLOAK:v1:"
+const Prefix = "CLOAK:v2:"
 
-// Encrypt encrypts plaintext using an ephemeral X25519 key and AES-256-GCM.
-func Encrypt(plaintext []byte, recipientHex string) (string, error) {
-	recipientBytes, err := hex.DecodeString(recipientHex)
-	if err != nil {
-		return "", fmt.Errorf("invalid recipient public key hex: %w", err)
+var ErrNoMatchingRecipient = errors.New("no matching recipient found for local private key")
+
+// Encrypt encrypts plaintext with a random DEK, then wraps the DEK for each recipient.
+func Encrypt(plaintext []byte, recipients []string) (string, error) {
+	if len(recipients) == 0 {
+		return "", errors.New("at least one recipient public key is required")
 	}
 
+	// 1. Generate a random 32-byte Data Encryption Key (DEK)
+	dek := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, dek); err != nil {
+		return "", fmt.Errorf("failed to generate data key: %w", err)
+	}
+
+	// 2. Encrypt plaintext with the DEK using AES-256-GCM
+	dataBlock, err := aes.NewCipher(dek)
+	if err != nil {
+		return "", fmt.Errorf("failed to create data cipher: %w", err)
+	}
+	dataGcm, err := cipher.NewGCM(dataBlock)
+	if err != nil {
+		return "", fmt.Errorf("failed to create data gcm: %w", err)
+	}
+
+	dataNonce := make([]byte, dataGcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, dataNonce); err != nil {
+		return "", fmt.Errorf("failed to generate data nonce: %w", err)
+	}
+	dataCiphertext := dataGcm.Seal(nil, dataNonce, plaintext, nil)
+
+	// 3. Wrap DEK for each recipient
 	curve := ecdh.X25519()
-	recipientPub, err := curve.NewPublicKey(recipientBytes)
-	if err != nil {
-		return "", fmt.Errorf("invalid recipient public key: %w", err)
+	var wrappedList []string
+
+	for _, recipHex := range recipients {
+		recipBytes, err := hex.DecodeString(strings.TrimSpace(recipHex))
+		if err != nil {
+			return "", fmt.Errorf("invalid recipient hex: %w", err)
+		}
+
+		recipPub, err := curve.NewPublicKey(recipBytes)
+		if err != nil {
+			return "", fmt.Errorf("invalid recipient public key: %w", err)
+		}
+
+		ephemPriv, err := curve.GenerateKey(rand.Reader)
+		if err != nil {
+			return "", fmt.Errorf("failed generating ephemeral key: %w", err)
+		}
+
+		sharedSecret, err := ephemPriv.ECDH(recipPub)
+		if err != nil {
+			return "", fmt.Errorf("ecdh failed: %w", err)
+		}
+		wrapKey := sha256.Sum256(sharedSecret)
+
+		wrapBlock, err := aes.NewCipher(wrapKey[:])
+		if err != nil {
+			return "", fmt.Errorf("failed wrap cipher: %w", err)
+		}
+		wrapGcm, err := cipher.NewGCM(wrapBlock)
+		if err != nil {
+			return "", fmt.Errorf("failed wrap gcm: %w", err)
+		}
+
+		wrapNonce := make([]byte, wrapGcm.NonceSize())
+		if _, err := io.ReadFull(rand.Reader, wrapNonce); err != nil {
+			return "", fmt.Errorf("failed wrap nonce: %w", err)
+		}
+
+		wrappedDek := wrapGcm.Seal(nil, wrapNonce, dek, nil)
+
+		// Each recipient wrap: ephemPub(32B):wrapNonce(12B):wrappedDek(48B) in hex
+		entry := fmt.Sprintf("%s:%s:%s",
+			hex.EncodeToString(ephemPriv.PublicKey().Bytes()),
+			hex.EncodeToString(wrapNonce),
+			hex.EncodeToString(wrappedDek),
+		)
+		wrappedList = append(wrappedList, entry)
 	}
 
-	// 1. Generate ephemeral keypair
-	ephemeralPriv, err := curve.GenerateKey(rand.Reader)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate ephemeral key: %w", err)
-	}
-	ephemeralPub := ephemeralPriv.PublicKey()
-
-	// 2. ECDH shared secret & derive AES key via SHA-256
-	sharedSecret, err := ephemeralPriv.ECDH(recipientPub)
-	if err != nil {
-		return "", fmt.Errorf("ecdh computation failed: %w", err)
-	}
-	aesKey := sha256.Sum256(sharedSecret)
-
-	// 3. Encrypt with AES-256-GCM
-	block, err := aes.NewCipher(aesKey[:])
-	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %w", err)
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("failed to create gcm: %w", err)
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", fmt.Errorf("failed to generate nonce: %w", err)
-	}
-
-	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
-
-	// Format: CLOAK:v1:<ephemPubHex>:<nonceHex>:<ciphertextHex>
-	return fmt.Sprintf("%s%s:%s:%s",
+	// Format: CLOAK:v2:<dataNonce>:<dataCiphertext>|<recip1>,<recip2>,...
+	return fmt.Sprintf("%s%s:%s|%s",
 		Prefix,
-		hex.EncodeToString(ephemeralPub.Bytes()),
-		hex.EncodeToString(nonce),
-		hex.EncodeToString(ciphertext),
+		hex.EncodeToString(dataNonce),
+		hex.EncodeToString(dataCiphertext),
+		strings.Join(wrappedList, ","),
 	), nil
 }
 
-// Decrypt decrypts a CLOAK:v1 payload using the local private key hex.
+// Decrypt unwraps the DEK using the local private key, then decrypts the payload.
 func Decrypt(envelope string, privKeyHex string) ([]byte, error) {
 	if !strings.HasPrefix(envelope, Prefix) {
 		return nil, fmt.Errorf("invalid envelope prefix")
 	}
 
-	parts := strings.Split(strings.TrimPrefix(envelope, Prefix), ":")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("malformed cloak payload")
+	trimmed := strings.TrimPrefix(envelope, Prefix)
+	parts := strings.SplitN(trimmed, "|", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("malformed cloak v2 envelope")
 	}
 
-	ephemPubBytes, err := hex.DecodeString(parts[0])
-	if err != nil {
-		return nil, fmt.Errorf("invalid ephemeral public key hex: %w", err)
+	dataParts := strings.Split(parts[0], ":")
+	if len(dataParts) != 2 {
+		return nil, fmt.Errorf("malformed data segment")
 	}
 
-	nonce, err := hex.DecodeString(parts[1])
+	dataNonce, err := hex.DecodeString(dataParts[0])
 	if err != nil {
-		return nil, fmt.Errorf("invalid nonce hex: %w", err)
+		return nil, fmt.Errorf("invalid data nonce hex: %w", err)
 	}
 
-	ciphertext, err := hex.DecodeString(parts[2])
+	dataCiphertext, err := hex.DecodeString(dataParts[1])
 	if err != nil {
-		return nil, fmt.Errorf("invalid ciphertext hex: %w", err)
+		return nil, fmt.Errorf("invalid data ciphertext hex: %w", err)
 	}
 
 	// Load local private key
-	privBytes, err := hex.DecodeString(privKeyHex)
+	privBytes, err := hex.DecodeString(strings.TrimSpace(privKeyHex))
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key hex: %w", err)
 	}
 
 	curve := ecdh.X25519()
-	privKey, err := curve.NewPrivateKey(privBytes)
+	localPriv, err := curve.NewPrivateKey(privBytes)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key: %w", err)
 	}
 
-	ephemPub, err := curve.NewPublicKey(ephemPubBytes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid ephemeral public key: %w", err)
+	// 4. Try unwrapping the DEK from one of the recipient entries
+	recipEntries := strings.Split(parts[1], ",")
+	var dek []byte
+
+	for _, entry := range recipEntries {
+		entryParts := strings.Split(entry, ":")
+		if len(entryParts) != 3 {
+			continue
+		}
+
+		ephemPubBytes, err := hex.DecodeString(entryParts[0])
+		if err != nil {
+			continue
+		}
+
+		wrapNonce, err := hex.DecodeString(entryParts[1])
+		if err != nil {
+			continue
+		}
+
+		wrappedDek, err := hex.DecodeString(entryParts[2])
+		if err != nil {
+			continue
+		}
+
+		ephemPub, err := curve.NewPublicKey(ephemPubBytes)
+		if err != nil {
+			continue
+		}
+
+		sharedSecret, err := localPriv.ECDH(ephemPub)
+		if err != nil {
+			continue
+		}
+		wrapKey := sha256.Sum256(sharedSecret)
+
+		wrapBlock, err := aes.NewCipher(wrapKey[:])
+		if err != nil {
+			continue
+		}
+
+		wrapGcm, err := cipher.NewGCM(wrapBlock)
+		if err != nil {
+			continue
+		}
+
+		unwrapped, err := wrapGcm.Open(nil, wrapNonce, wrappedDek, nil)
+		if err == nil {
+			dek = unwrapped
+			break
+		}
 	}
 
-	// 1. Recover shared secret & AES key
-	sharedSecret, err := privKey.ECDH(ephemPub)
-	if err != nil {
-		return nil, fmt.Errorf("ecdh computation failed: %w", err)
-	}
-	aesKey := sha256.Sum256(sharedSecret)
-
-	// 2. Decrypt with AES-GCM
-	block, err := aes.NewCipher(aesKey[:])
-	if err != nil {
-		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	if dek == nil {
+		return nil, ErrNoMatchingRecipient
 	}
 
-	gcm, err := cipher.NewGCM(block)
+	// 5. Decrypt data ciphertext with recovered DEK
+	dataBlock, err := aes.NewCipher(dek)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create gcm: %w", err)
+		return nil, fmt.Errorf("failed data cipher: %w", err)
 	}
 
-	return gcm.Open(nil, nonce, ciphertext, nil)
+	dataGcm, err := cipher.NewGCM(dataBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed data gcm: %w", err)
+	}
+
+	return dataGcm.Open(nil, dataNonce, dataCiphertext, nil)
 }

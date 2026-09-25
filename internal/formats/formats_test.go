@@ -4,16 +4,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ynotnauk/cloak/internal/crypto"
 	"github.com/ynotnauk/cloak/internal/formats"
 )
 
-// Mock crypto functions for testing formatters
+// Mock crypto functions using current crypto.Prefix
 func mockEncrypt(b []byte) (string, error) {
-	return "CLOAK:v1:mock:" + string(b), nil
+	return crypto.Prefix + "mock:" + string(b), nil
 }
 
 func mockDecrypt(s string) ([]byte, error) {
-	return []byte(strings.TrimPrefix(s, "CLOAK:v1:mock:")), nil
+	return []byte(strings.TrimPrefix(s, crypto.Prefix+"mock:")), nil
 }
 
 func TestEnvFormatter(t *testing.T) {
@@ -28,7 +29,7 @@ func TestEnvFormatter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(string(enc), "PASSWORD=CLOAK:v1:mock:secret123") {
+	if !strings.Contains(string(enc), "PASSWORD="+crypto.Prefix+"mock:secret123") {
 		t.Fatalf("expected encrypted PASSWORD, got:\n%s", string(enc))
 	}
 
