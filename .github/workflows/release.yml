@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to create releases
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Build Cross-Platform Binaries
+        run: |
+          mkdir -p dist
+          # Linux
+          GOOS=linux GOARCH=amd64 go build -o dist/cloak-linux-amd64 ./cmd/cloak
+          GOOS=linux GOARCH=arm64 go build -o dist/cloak-linux-arm64 ./cmd/cloak
+          # macOS
+          GOOS=darwin GOARCH=amd64 go build -o dist/cloak-darwin-amd64 ./cmd/cloak
+          GOOS=darwin GOARCH=arm64 go build -o dist/cloak-darwin-arm64 ./cmd/cloak
+          # Windows
+          GOOS=windows GOARCH=amd64 go build -o dist/cloak-windows-amd64.exe ./cmd/cloak
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="v0.1.$(date +'%Y%m%d%H%M%S')"
+          gh release create "$TAG_NAME" dist/* \
+            --title "Release $TAG_NAME" \
+            --generate-notes
