@@ -11,6 +11,12 @@ import (
 	"github.com/ynotnauk/cloak/internal/keys"
 )
 
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
+
 // stringSlice allows repeated flags: -r key1 -r key2
 type stringSlice []string
 
@@ -142,6 +148,9 @@ func main() {
 				os.Exit(1)
 			}
 
+		case "version":
+			fmt.Printf("cloak %s (commit: %s, built at: %s)\n", Version, Commit, Date)
+
 		default:
 			fmt.Println("Usage: cloak recipient <list|add|remove> [key]")
 			os.Exit(1)
@@ -182,4 +191,5 @@ func printUsage() {
 	fmt.Println("  rekey                                   Rotate DEK and re-encrypt files")
 	fmt.Println("  encrypt                                 Encrypt all matching project files in-place")
 	fmt.Println("  decrypt                                 Decrypt all matching project files in-place")
+	fmt.Println("  version                                 Show cloak version information")
 }
