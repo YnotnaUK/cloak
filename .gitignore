@@ -1,3 +1,16 @@
-# Added by cargo
+# Binaries
+bin/
+cloak
 
-/target
+# Coverage and test artifacts
+coverage/
+*.out
+*.test
+
+# OS & Editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

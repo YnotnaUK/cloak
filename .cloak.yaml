@@ -1,0 +1,28 @@
+recipients:
+  - 24e1679ae9ae7a0828bd10afc2a44ce1a4c1a5a8df9382ca4f8756efe8854d07
+exclude:
+  - .git
+  - node_modules
+  - bin
+  - coverage
+  - .cloak.yaml
+rules:
+  - path_regex: .*\.secret$
+    type: full
+  - path_regex: .*\.ya?ml$
+    type: yaml
+    encrypted_keys:
+      - password
+      - secret
+      - token
+  - path_regex: .*\.json$
+    type: json
+    encrypted_keys:
+      - password
+      - secret
+      - token
+  - path_regex: .*\.env$
+    type: env
+    encrypted_keys:
+      - PASSWORD
+      - SECRET_KEY

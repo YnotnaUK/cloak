@@ -1,8 +1,0 @@
-# Cloak configuration file
-# Run `cloak encrypt <file>` to encrypt using these recipients
-
-recipients:
-- age1fktc62na39h3mjkae450dat4rm2ec9at8l5xfze6h8wjrj7s43zs2mf2m9
-rules:
-  - path_regex: ".*\\.(yaml|yml|json)$"
-    encrypted_regex: "^(password|secret|token|key|stripe_key)$"
