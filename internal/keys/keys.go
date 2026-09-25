@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Generate creates a new X25519 keypair and writes it to disk.
@@ -56,4 +57,29 @@ func Generate(force bool) (string, string, error) {
 	}
 
 	return pubHex, keyFilePath, nil
+}
+
+// ReadPublicKey extracts the public key from the default key file.
+func ReadPublicKey() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config dir: %w", err)
+	}
+
+	keyFilePath := filepath.Join(configDir, "cloak", "key.txt")
+	data, err := os.ReadFile(keyFilePath)
+	if err != nil {
+		return "", fmt.Errorf("could not read key file (run 'cloak keygen' first): %w", err)
+	}
+
+	// Parse the first comment line: "# Public Key: <hex>"
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# Public Key:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# Public Key:")), nil
+		}
+	}
+
+	return "", errors.New("public key not found in key file")
 }

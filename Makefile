@@ -15,3 +15,9 @@ keygen:
 
 keygen-force:
 	go run ./cmd/cloak/ keygen -f
+
+init:
+	go run ./cmd/cloak/ init
+
+init-force:
+	go run ./cmd/cloak/ init -f
