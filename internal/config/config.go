@@ -25,7 +25,8 @@ type Config struct {
 	Rules      []Rule   `yaml:"rules"`
 }
 
-func Init(pubKey string, force bool) error {
+// Replace the signature and assignment in Init:
+func Init(recipients []string, force bool) error {
 	flags := os.O_WRONLY | os.O_CREATE
 	if force {
 		flags |= os.O_TRUNC
@@ -43,7 +44,7 @@ func Init(pubKey string, force bool) error {
 	defer f.Close()
 
 	cfg := Config{
-		Recipients: []string{pubKey},
+		Recipients: recipients,
 		Exclude: []string{
 			".git",
 			"node_modules",

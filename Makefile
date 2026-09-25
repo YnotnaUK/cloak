@@ -35,6 +35,9 @@ init:
 init-force:
 	go run ./cmd/cloak/ init -f
 
+recipient-list:
+	go run ./cmd/cloak/ recipient list
+
 encrypt:
 	go run ./cmd/cloak/ encrypt
 

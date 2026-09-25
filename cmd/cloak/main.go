@@ -4,11 +4,24 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/ynotnauk/cloak/internal/config"
 	"github.com/ynotnauk/cloak/internal/engine"
 	"github.com/ynotnauk/cloak/internal/keys"
 )
+
+// stringSlice allows repeated flags: -r key1 -r key2
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+	return strings.Join(*s, ", ")
+}
+
+func (s *stringSlice) Set(val string) error {
+	*s = append(*s, strings.TrimSpace(val))
+	return nil
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -38,19 +51,52 @@ func main() {
 		initCmd := flag.NewFlagSet("init", flag.ExitOnError)
 		force := initCmd.Bool("force", false, "Overwrite existing config")
 		initCmd.BoolVar(force, "f", false, "Overwrite existing config (shorthand)")
+
+		var recipients stringSlice
+		initCmd.Var(&recipients, "r", "Recipient public key (can be repeated)")
+		initCmd.Var(&recipients, "recipient", "Recipient public key (can be repeated)")
 		initCmd.Parse(os.Args[2:])
 
-		pubKey, err := keys.ReadPublicKey()
-		if err != nil {
+		// If no recipients specified, default to local machine key
+		if len(recipients) == 0 {
+			pubKey, err := keys.ReadPublicKey()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			recipients = append(recipients, pubKey)
+		}
+
+		if err := config.Init(recipients, *force); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Initialized %s with %d recipient(s):\n", config.ConfigFileName, len(recipients))
+		for _, r := range recipients {
+			fmt.Printf("  - %s\n", r)
+		}
+
+	case "recipient":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: cloak recipient <list>")
 			os.Exit(1)
 		}
 
-		if err := config.Init(pubKey, *force); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		switch os.Args[2] {
+		case "list":
+			cfg, err := config.Load()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Configured recipients in %s:\n", config.ConfigFileName)
+			for i, r := range cfg.Recipients {
+				fmt.Printf("  %d. %s\n", i+1, r)
+			}
+		default:
+			fmt.Println("Usage: cloak recipient <list>")
 			os.Exit(1)
 		}
-		fmt.Printf("Initialized %s with public key: %s\n", config.ConfigFileName, pubKey)
 
 	case "encrypt":
 		if err := engine.Process(false); err != nil {
@@ -73,8 +119,9 @@ func main() {
 func printUsage() {
 	fmt.Println("Usage: cloak <command> [options]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  keygen   [-f|--force]    Generate a new X25519 identity keypair")
-	fmt.Println("  init     [-f|--force]    Create a .cloak.yaml config file")
-	fmt.Println("  encrypt                  Encrypt all matching project files in-place")
-	fmt.Println("  decrypt                  Decrypt all matching project files in-place")
+	fmt.Println("  keygen    [-f|--force]                  Generate a new X25519 identity keypair")
+	fmt.Println("  init      [-f] [-r <key> ...]           Create a .cloak.yaml config file")
+	fmt.Println("  recipient list                          List all project recipients")
+	fmt.Println("  encrypt                                 Encrypt all matching project files in-place")
+	fmt.Println("  decrypt                                 Decrypt all matching project files in-place")
 }
