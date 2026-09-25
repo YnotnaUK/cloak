@@ -54,7 +54,8 @@ func (y *YamlFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, 
 }
 
 func walkYamlEncrypt(node *yaml.Node, keys map[string]bool, encryptFn func([]byte) (string, error)) error {
-	if node.Kind == yaml.MappingNode {
+	switch node.Kind {
+	case yaml.MappingNode:
 		for i := 0; i < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
 			valNode := node.Content[i+1]
@@ -72,7 +73,7 @@ func walkYamlEncrypt(node *yaml.Node, keys map[string]bool, encryptFn func([]byt
 				}
 			}
 		}
-	} else if node.Kind == yaml.DocumentNode || node.Kind == yaml.SequenceNode {
+	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
 			if err := walkYamlEncrypt(child, keys, encryptFn); err != nil {
 				return err
@@ -83,7 +84,8 @@ func walkYamlEncrypt(node *yaml.Node, keys map[string]bool, encryptFn func([]byt
 }
 
 func walkYamlDecrypt(node *yaml.Node, decryptFn func(string) ([]byte, error)) error {
-	if node.Kind == yaml.MappingNode {
+	switch node.Kind {
+	case yaml.MappingNode:
 		for i := 0; i < len(node.Content); i += 2 {
 			valNode := node.Content[i+1]
 			if valNode.Kind == yaml.ScalarNode && strings.HasPrefix(valNode.Value, "CLOAK:v1:") {
@@ -98,7 +100,7 @@ func walkYamlDecrypt(node *yaml.Node, decryptFn func(string) ([]byte, error)) er
 				}
 			}
 		}
-	} else if node.Kind == yaml.DocumentNode || node.Kind == yaml.SequenceNode {
+	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
 			if err := walkYamlDecrypt(child, decryptFn); err != nil {
 				return err
