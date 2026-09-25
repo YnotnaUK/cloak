@@ -22,20 +22,28 @@ jobs:
       - name: Build Cross-Platform Binaries
         run: |
           mkdir -p dist
+          BASE_VERSION=$(cat VERSION | tr -d '[:space:]')
+          TAG_NAME="v${BASE_VERSION}.$(date +'%Y%m%d%H%M%S')"
+          COMMIT="${GITHUB_SHA:0:7}"
+          BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          
+          LDFLAGS="-s -w -X main.Version=${TAG_NAME} -X main.Commit=${COMMIT} -X main.Date=${BUILD_DATE}"
+
           # Linux
-          GOOS=linux GOARCH=amd64 go build -o dist/cloak-linux-amd64 ./cmd/cloak
-          GOOS=linux GOARCH=arm64 go build -o dist/cloak-linux-arm64 ./cmd/cloak
+          GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/cloak-linux-amd64 ./cmd/cloak
+          GOOS=linux GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/cloak-linux-arm64 ./cmd/cloak
           # macOS
-          GOOS=darwin GOARCH=amd64 go build -o dist/cloak-darwin-amd64 ./cmd/cloak
-          GOOS=darwin GOARCH=arm64 go build -o dist/cloak-darwin-arm64 ./cmd/cloak
+          GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/cloak-darwin-amd64 ./cmd/cloak
+          GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o dist/cloak-darwin-arm64 ./cmd/cloak
           # Windows
-          GOOS=windows GOARCH=amd64 go build -o dist/cloak-windows-amd64.exe ./cmd/cloak
+          GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/cloak-windows-amd64.exe ./cmd/cloak
+
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
 
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="v0.2.$(date +'%Y%m%d%H%M%S')"
           gh release create "$TAG_NAME" dist/* \
             --title "Release $TAG_NAME" \
             --generate-notes
