@@ -1,6 +1,6 @@
 {
-  "service": "billing",
-  "port": 9000,
   "password": "db_secret_pass",
+  "port": 9000,
+  "service": "billing",
   "token": "api_secret_key"
 }
