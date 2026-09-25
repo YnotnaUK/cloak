@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -100,4 +103,80 @@ func (c *Config) FindRule(path string) *Rule {
 		}
 	}
 	return nil
+}
+
+// Save writes the updated config back to .cloak.yaml
+func (c *Config) Save() error {
+	f, err := os.OpenFile(ConfigFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	encoder := yaml.NewEncoder(f)
+	encoder.SetIndent(2)
+	return encoder.Encode(c)
+}
+
+// AddRecipient cryptographically validates the public key before adding it.
+func (c *Config) AddRecipient(key string) error {
+	key = strings.TrimSpace(key)
+	if len(key) != 64 {
+		return fmt.Errorf("invalid recipient public key length (expected 64 hex characters)")
+	}
+
+	keyBytes, err := hex.DecodeString(key)
+	if err != nil {
+		return fmt.Errorf("invalid hex encoding: %w", err)
+	}
+
+	curve := ecdh.X25519()
+	pub, err := curve.NewPublicKey(keyBytes)
+	if err != nil {
+		return fmt.Errorf("invalid public key: %w", err)
+	}
+
+	// Test ECDH against a temporary key to detect low-order points upfront
+	dummyPriv, err := curve.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("crypto error: %w", err)
+	}
+	if _, err := dummyPriv.ECDH(pub); err != nil {
+		return fmt.Errorf("invalid X25519 public key: %w", err)
+	}
+
+	for _, r := range c.Recipients {
+		if r == key {
+			return fmt.Errorf("recipient already exists")
+		}
+	}
+
+	c.Recipients = append(c.Recipients, key)
+	return c.Save()
+}
+
+// RemoveRecipient removes a key from the recipient list.
+func (c *Config) RemoveRecipient(key string) error {
+	key = strings.TrimSpace(key)
+	found := false
+	var updated []string
+
+	for _, r := range c.Recipients {
+		if r == key {
+			found = true
+			continue
+		}
+		updated = append(updated, r)
+	}
+
+	if !found {
+		return fmt.Errorf("recipient %s not found in %s", key, ConfigFileName)
+	}
+
+	if len(updated) == 0 {
+		return fmt.Errorf("cannot remove last recipient; at least one recipient is required")
+	}
+
+	c.Recipients = updated
+	return c.Save()
 }

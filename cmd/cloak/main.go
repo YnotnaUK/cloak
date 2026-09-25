@@ -78,7 +78,7 @@ func main() {
 
 	case "recipient":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: cloak recipient <list>")
+			fmt.Println("Usage: cloak recipient <list|add|remove> [key]")
 			os.Exit(1)
 		}
 
@@ -93,8 +93,63 @@ func main() {
 			for i, r := range cfg.Recipients {
 				fmt.Printf("  %d. %s\n", i+1, r)
 			}
+
+		case "add":
+			if len(os.Args) < 4 {
+				fmt.Println("Usage: cloak recipient add <public_key_hex>")
+				os.Exit(1)
+			}
+			keyToAdd := os.Args[3]
+
+			cfg, err := config.Load()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			if err := cfg.AddRecipient(keyToAdd); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Added recipient: %s\n", keyToAdd)
+			fmt.Println("Rotating DEK and re-keying project files...")
+			if err := engine.Rekey(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error re-keying: %v\n", err)
+				os.Exit(1)
+			}
+
+		case "remove":
+			if len(os.Args) < 4 {
+				fmt.Println("Usage: cloak recipient remove <public_key_hex>")
+				os.Exit(1)
+			}
+			keyToRemove := os.Args[3]
+
+			cfg, err := config.Load()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			if err := cfg.RemoveRecipient(keyToRemove); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Removed recipient: %s\n", keyToRemove)
+			fmt.Println("Rotating DEK and re-keying project files...")
+			if err := engine.Rekey(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error re-keying: %v\n", err)
+				os.Exit(1)
+			}
+
 		default:
-			fmt.Println("Usage: cloak recipient <list>")
+			fmt.Println("Usage: cloak recipient <list|add|remove> [key]")
+			os.Exit(1)
+		}
+
+	case "rekey":
+		if err := engine.Rekey(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
@@ -122,6 +177,9 @@ func printUsage() {
 	fmt.Println("  keygen    [-f|--force]                  Generate a new X25519 identity keypair")
 	fmt.Println("  init      [-f] [-r <key> ...]           Create a .cloak.yaml config file")
 	fmt.Println("  recipient list                          List all project recipients")
+	fmt.Println("  recipient add <key>                     Add recipient & rekey files")
+	fmt.Println("  recipient remove <key>                  Remove recipient & rekey files")
+	fmt.Println("  rekey                                   Rotate DEK and re-encrypt files")
 	fmt.Println("  encrypt                                 Encrypt all matching project files in-place")
 	fmt.Println("  decrypt                                 Decrypt all matching project files in-place")
 }

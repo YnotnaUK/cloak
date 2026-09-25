@@ -1,7 +1,7 @@
 BINARY_NAME=cloak
 COVERAGE_DIR=coverage
 
-.PHONY: all test test-coverage test-cover build clean keygen keygen-force init init-force encrypt decrypt
+.PHONY: all test test-coverage test-cover build clean keygen keygen-force init init-force recipient-list recipient-add recipient-remove rekey encrypt decrypt
 
 all: build
 
@@ -37,6 +37,17 @@ init-force:
 
 recipient-list:
 	go run ./cmd/cloak/ recipient list
+
+recipient-add:
+	@test -n "$(KEY)" || (echo "Usage: make recipient-add KEY=<public_key_hex>" && exit 1)
+	go run ./cmd/cloak/ recipient add $(KEY)
+
+recipient-remove:
+	@test -n "$(KEY)" || (echo "Usage: make recipient-remove KEY=<public_key_hex>" && exit 1)
+	go run ./cmd/cloak/ recipient remove $(KEY)
+
+rekey:
+	go run ./cmd/cloak/ rekey
 
 encrypt:
 	go run ./cmd/cloak/ encrypt

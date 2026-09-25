@@ -23,5 +23,8 @@ func (f *FullFormatter) Encrypt(content []byte, _ []string, encryptFn func([]byt
 
 func (f *FullFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, error)) ([]byte, error) {
 	encStr := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(encStr, crypto.Prefix) {
+		return content, nil // Already decrypted / plaintext
+	}
 	return decryptFn(encStr)
 }
