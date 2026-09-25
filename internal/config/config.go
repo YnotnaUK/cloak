@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -66,4 +67,33 @@ func Init(pubKey string, force bool) error {
 	encoder := yaml.NewEncoder(f)
 	encoder.SetIndent(2)
 	return encoder.Encode(cfg)
+}
+
+// Load reads and parses .cloak.yaml from the current directory.
+func Load() (*Config, error) {
+	data, err := os.ReadFile(ConfigFileName)
+	if err != nil {
+		return nil, fmt.Errorf("could not read %s: %w", ConfigFileName, err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", ConfigFileName, err)
+	}
+
+	return &cfg, nil
+}
+
+// FindRule matches a file path against configured rules in order.
+func (c *Config) FindRule(path string) (*Rule, error) {
+	for _, rule := range c.Rules {
+		matched, err := regexp.MatchString(rule.PathRegex, path)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex %q: %w", rule.PathRegex, err)
+		}
+		if matched {
+			return &rule, nil
+		}
+	}
+	return nil, fmt.Errorf("no rule found matching path %q", path)
 }
