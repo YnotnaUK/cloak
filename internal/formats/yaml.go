@@ -61,6 +61,10 @@ func walkYamlEncrypt(node *yaml.Node, keys map[string]bool, encryptFn func([]byt
 			valNode := node.Content[i+1]
 
 			if keys[keyNode.Value] && valNode.Kind == yaml.ScalarNode {
+				if strings.HasPrefix(valNode.Value, "CLOAK:v1:") {
+					continue // Already encrypted
+				}
+
 				enc, err := encryptFn([]byte(valNode.Value))
 				if err != nil {
 					return err

@@ -46,6 +46,17 @@ func walkMapEncrypt(m map[string]any, keys map[string]bool, encryptFn func([]byt
 			if err := walkMapEncrypt(val, keys, encryptFn); err != nil {
 				return err
 			}
+		case string:
+			if keys[k] {
+				if strings.HasPrefix(val, "CLOAK:v1:") {
+					continue // Already encrypted
+				}
+				enc, err := encryptFn([]byte(val))
+				if err != nil {
+					return fmt.Errorf("failed encrypting key %s: %w", k, err)
+				}
+				m[k] = enc
+			}
 		default:
 			if keys[k] {
 				enc, err := encryptFn([]byte(fmt.Sprintf("%v", val)))

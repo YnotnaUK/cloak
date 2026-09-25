@@ -34,6 +34,13 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 		v := parts[1]
 
 		if keySet[k] {
+			trimmedVal := strings.TrimSpace(v)
+			if strings.HasPrefix(trimmedVal, "CLOAK:v1:") {
+				out.WriteString(line)
+				out.WriteByte('\n')
+				continue
+			}
+
 			encVal, err := encryptFn([]byte(v))
 			if err != nil {
 				return nil, fmt.Errorf("failed encrypting key %s: %w", k, err)
