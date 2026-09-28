@@ -25,12 +25,16 @@ Cloak encrypts sensitive values inside structured files (.env, .json, .yaml) or 
 
 ## Installation
 
-Download pre-built binaries from Releases, or build from source:
+### Via One-Line Install Script (Linux & macOS)
+```bash
+curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/main/install.sh | bash
+```
 
+### From Source
 ```bash
 git clone https://github.com/ynotnauk/cloak.git
 cd cloak
-make build
+make install
 ```
 
 ---
