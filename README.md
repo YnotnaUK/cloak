@@ -23,6 +23,19 @@ Cloak encrypts sensitive values inside structured files (.env, .json, .yaml) or 
 
 ---
 
+## Prerequisites
+
+### To Install and Run Pre-built Binaries
+- Linux or macOS
+- `curl` and `bash`
+
+### To Build from Source
+- **Go:** 1.20 or newer (requires standard library `crypto/ecdh`)
+- **make:** GNU Make
+- **git**
+
+---
+
 ## Installation
 
 ### Via One-Line Install Script (Linux & macOS)
