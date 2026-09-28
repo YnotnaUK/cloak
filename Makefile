@@ -6,7 +6,7 @@ VERSION      ?= v$(BASE_VERSION)-dev-$(COMMIT)
 LDFLAGS = -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.Date=$(DATE)"
 COVERAGE_DIR=coverage
 
-.PHONY: all test test-coverage test-cover build clean keygen keygen-force init init-force recipient-list recipient-add recipient-remove rekey encrypt decrypt
+.PHONY: all test test-coverage test-cover build install clean keygen keygen-force init init-force recipient-list recipient-add recipient-remove rekey encrypt decrypt
 
 all: build
 
@@ -24,6 +24,9 @@ test-coverage:
 
 build:
 	go build $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/cloak
+
+install: build
+	sudo install -m 755 bin/$(BINARY_NAME) /usr/local/bin/
 
 clean:
 	rm -rf bin/ $(COVERAGE_DIR)

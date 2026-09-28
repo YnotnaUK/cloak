@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'VERSION'
 
 jobs:
   build-and-release:
@@ -26,7 +32,7 @@ jobs:
           TAG_NAME="v${BASE_VERSION}.$(date +'%Y%m%d%H%M%S')"
           COMMIT="${GITHUB_SHA:0:7}"
           BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          
+
           LDFLAGS="-s -w -X main.Version=${TAG_NAME} -X main.Commit=${COMMIT} -X main.Date=${BUILD_DATE}"
 
           # Linux
