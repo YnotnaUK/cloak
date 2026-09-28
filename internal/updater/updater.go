@@ -82,7 +82,7 @@ func StartCheck(currentVersion string) func() {
 
 				resultChan <- fmt.Sprintf(
 					"\n[notice] A new version of cloak is available: %s (current: %s)\n"+
-						"[notice] To update, run: curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/main/install.sh | bash\n",
+						"[notice] To update, run: cloak update\n",
 					state.LatestVersion, currentVersion,
 				)
 			}

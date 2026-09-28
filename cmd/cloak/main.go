@@ -183,7 +183,7 @@ func main() {
 		fmt.Printf("cloak %s (commit: %s, built at: %s)\n", Version, Commit, Date)
 			if latest, hasUpdate := updater.CheckLatest(Version); hasUpdate {
 				fmt.Printf("\n[notice] A new version of cloak is available: %s (current: %s)\n", latest, Version)
-				fmt.Println("[notice] To update, run: curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/main/install.sh | bash")
+				fmt.Println("[notice] To update, run: cloak update")
 			}
 
 	case "update":
