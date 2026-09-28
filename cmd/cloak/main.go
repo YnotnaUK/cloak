@@ -9,6 +9,7 @@ import (
 	"github.com/ynotnauk/cloak/internal/config"
 	"github.com/ynotnauk/cloak/internal/engine"
 	"github.com/ynotnauk/cloak/internal/keys"
+	"github.com/ynotnauk/cloak/internal/updater"
 )
 
 var (
@@ -30,14 +31,21 @@ func (s *stringSlice) Set(val string) error {
 }
 
 func main() {
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
 	}
 
+	cmd := os.Args[1]
+
+	if cmd != "version" && cmd != "update" {
+		defer updater.StartCheck(Version)()
+	}
+
 	engine.SetKeyLoader(keys.ReadPrivateKey)
 
-	switch os.Args[1] {
+	switch cmd {
 	case "keygen":
 		keygenCmd := flag.NewFlagSet("keygen", flag.ExitOnError)
 		force := keygenCmd.Bool("force", false, "Overwrite existing key file")
@@ -173,6 +181,16 @@ func main() {
 
 	case "version":
 		fmt.Printf("cloak %s (commit: %s, built at: %s)\n", Version, Commit, Date)
+			if latest, hasUpdate := updater.CheckLatest(Version); hasUpdate {
+				fmt.Printf("\n[notice] A new version of cloak is available: %s (current: %s)\n", latest, Version)
+				fmt.Println("[notice] To update, run: curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/main/install.sh | bash")
+			}
+
+	case "update":
+		if err := updater.Upgrade(Version); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
 	default:
 		printUsage()
@@ -192,4 +210,5 @@ func printUsage() {
 	fmt.Println("  encrypt                                 Encrypt all matching project files in-place")
 	fmt.Println("  decrypt                                 Decrypt all matching project files in-place")
 	fmt.Println("  version                                 Show cloak version information")
+	fmt.Println("  update                                  Self-update to the latest release")
 }
