@@ -50,7 +50,9 @@ func main() {
 		keygenCmd := flag.NewFlagSet("keygen", flag.ExitOnError)
 		force := keygenCmd.Bool("force", false, "Overwrite existing key file")
 		keygenCmd.BoolVar(force, "f", false, "Overwrite existing key file (shorthand)")
-		keygenCmd.Parse(os.Args[2:])
+		if err := keygenCmd.Parse(os.Args[2:]); err != nil {
+			os.Exit(2)
+		}
 
 		pubKey, path, err := keys.Generate(*force)
 		if err != nil {
@@ -69,7 +71,9 @@ func main() {
 		var recipients stringSlice
 		initCmd.Var(&recipients, "r", "Recipient public key (can be repeated)")
 		initCmd.Var(&recipients, "recipient", "Recipient public key (can be repeated)")
-		initCmd.Parse(os.Args[2:])
+		if err := initCmd.Parse(os.Args[2:]); err != nil {
+			os.Exit(2)
+		}
 
 		// If no recipients specified, default to local machine key
 		if len(recipients) == 0 {
@@ -181,10 +185,10 @@ func main() {
 
 	case "version":
 		fmt.Printf("cloak %s (commit: %s, built at: %s)\n", Version, Commit, Date)
-			if latest, hasUpdate := updater.CheckLatest(Version); hasUpdate {
-				fmt.Printf("\n[notice] A new version of cloak is available: %s (current: %s)\n", latest, Version)
-				fmt.Println("[notice] To update, run: cloak update")
-			}
+		if latest, hasUpdate := updater.CheckLatest(Version); hasUpdate {
+			fmt.Printf("\n[notice] A new version of cloak is available: %s (current: %s)\n", latest, Version)
+			fmt.Println("[notice] To update, run: cloak update")
+		}
 
 	case "update":
 		if err := updater.Upgrade(Version); err != nil {

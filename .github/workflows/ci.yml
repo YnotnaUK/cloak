@@ -5,6 +5,26 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 'stable'
+
+      - name: Check Formatting
+        run: make fmt-check
+
+      - name: Go Vet
+        run: make vet
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+
   test:
     runs-on: ubuntu-latest
     steps:
