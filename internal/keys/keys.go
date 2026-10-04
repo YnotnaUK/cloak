@@ -46,13 +46,16 @@ func Generate(force bool) (string, string, error) {
 		}
 		return "", "", fmt.Errorf("failed to create key file: %w", err)
 	}
-	defer f.Close()
 
 	pubHex := hex.EncodeToString(pubKey.Bytes())
 	privHex := hex.EncodeToString(privKey.Bytes())
 
 	content := fmt.Sprintf("# Public Key: %s\n%s\n", pubHex, privHex)
 	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close()
+		return "", "", fmt.Errorf("failed to write key: %w", err)
+	}
+	if err := f.Close(); err != nil {
 		return "", "", fmt.Errorf("failed to write key: %w", err)
 	}
 

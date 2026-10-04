@@ -29,7 +29,7 @@ type Config struct {
 }
 
 // Replace the signature and assignment in Init:
-func Init(recipients []string, force bool) error {
+func Init(recipients []string, force bool) (err error) {
 	flags := os.O_WRONLY | os.O_CREATE
 	if force {
 		flags |= os.O_TRUNC
@@ -44,7 +44,11 @@ func Init(recipients []string, force bool) error {
 		}
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
 
 	cfg := Config{
 		Recipients: recipients,
@@ -106,12 +110,16 @@ func (c *Config) FindRule(path string) *Rule {
 }
 
 // Save writes the updated config back to .cloak.yaml
-func (c *Config) Save() error {
+func (c *Config) Save() (err error) {
 	f, err := os.OpenFile(ConfigFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
 
 	encoder := yaml.NewEncoder(f)
 	encoder.SetIndent(2)

@@ -6,9 +6,21 @@ VERSION      ?= v$(BASE_VERSION)-dev-$(COMMIT)
 LDFLAGS = -ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.Date=$(DATE)"
 COVERAGE_DIR=coverage
 
-.PHONY: all test test-coverage test-cover build install clean keygen keygen-force init init-force recipient-list recipient-add recipient-remove rekey encrypt decrypt
+.PHONY: all fmt fmt-check vet lint test test-coverage test-cover build install clean keygen keygen-force init init-force recipient-list recipient-add recipient-remove rekey encrypt decrypt
 
 all: build
+
+fmt:
+	gofmt -s -w .
+
+fmt-check:
+	@test -z "$$(gofmt -s -l .)" || (echo "Files need formatting:" && gofmt -s -l . && exit 1)
+
+vet:
+	go vet ./...
+
+lint: vet
+	golangci-lint run ./...
 
 test:
 	go test -v ./...
