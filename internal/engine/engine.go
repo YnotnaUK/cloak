@@ -70,7 +70,7 @@ func Process(decrypt bool) error {
 			})
 		} else {
 			processed, err = formatter.Encrypt(content, rule.EncryptedKeys, func(b []byte) (string, error) {
-				return crypto.Encrypt(b, cfg.Recipients)
+				return crypto.Encrypt(b, cfg.Keys())
 			})
 		}
 
@@ -154,7 +154,7 @@ func Rekey() error {
 
 		// 2. Re-encrypt with brand new DEK for updated recipients
 		rekeyed, err := formatter.Encrypt(decrypted, rule.EncryptedKeys, func(b []byte) (string, error) {
-			return crypto.Encrypt(b, cfg.Recipients)
+			return crypto.Encrypt(b, cfg.Keys())
 		})
 		if err != nil {
 			return fmt.Errorf("failed re-encrypting %s: %w", path, err)

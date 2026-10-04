@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/user"
 	"strings"
 
 	"github.com/ynotnauk/cloak/internal/config"
@@ -48,31 +49,61 @@ func main() {
 	switch cmd {
 	case "keygen":
 		keygenCmd := flag.NewFlagSet("keygen", flag.ExitOnError)
-		force := keygenCmd.Bool("force", false, "Overwrite existing key file")
-		keygenCmd.BoolVar(force, "f", false, "Overwrite existing key file (shorthand)")
+		var opts keys.Options
+		keygenCmd.BoolVar(&opts.Force, "force", false, "Overwrite existing key file")
+		keygenCmd.BoolVar(&opts.Force, "f", false, "Overwrite existing key file (shorthand)")
+		keygenCmd.StringVar(&opts.Path, "out", "", "Write the key to this file instead of the default location")
+		keygenCmd.StringVar(&opts.Path, "output", "", "Alias for --out")
+		keygenCmd.StringVar(&opts.Path, "o", "", "Alias for --out")
+		keygenCmd.BoolVar(&opts.Stdout, "stdout", false, "Print the key to stdout instead of writing a file")
+		keygenCmd.StringVar(&opts.Name, "name", "", "Label stored in the key file header")
 		if err := keygenCmd.Parse(os.Args[2:]); err != nil {
 			os.Exit(2)
 		}
 
-		pubKey, path, err := keys.Generate(*force)
+		res, err := keys.Generate(opts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+
+		if opts.Stdout {
+			// Private key goes to stdout only, so it can be piped; messages go to stderr.
+			fmt.Print(res.Content)
+			fmt.Fprintf(os.Stderr, "Public Key: %s\n", res.PublicKey)
+			break
+		}
 		fmt.Printf("Key generated successfully!\n")
-		fmt.Printf("Public Key: %s\n", pubKey)
-		fmt.Printf("Saved to:   %s\n", path)
+		fmt.Printf("Public Key: %s\n", res.PublicKey)
+		fmt.Printf("Saved to:   %s\n", res.Path)
+		if opts.Path != "" || opts.Name != "" {
+			name := opts.Name
+			if name == "" {
+				name = "<name>"
+			}
+			fmt.Printf("\nTo grant this key access to a project, run:\n  cloak recipient add %s --name %s\n", res.PublicKey, name)
+		}
 
 	case "init":
 		initCmd := flag.NewFlagSet("init", flag.ExitOnError)
 		force := initCmd.Bool("force", false, "Overwrite existing config")
 		initCmd.BoolVar(force, "f", false, "Overwrite existing config (shorthand)")
 
-		var recipients stringSlice
-		initCmd.Var(&recipients, "r", "Recipient public key (can be repeated)")
-		initCmd.Var(&recipients, "recipient", "Recipient public key (can be repeated)")
+		var rawRecipients stringSlice
+		initCmd.Var(&rawRecipients, "r", "Recipient as name=public_key (can be repeated)")
+		initCmd.Var(&rawRecipients, "recipient", "Recipient as name=public_key (can be repeated)")
 		if err := initCmd.Parse(os.Args[2:]); err != nil {
 			os.Exit(2)
+		}
+
+		var recipients []config.Recipient
+		for _, raw := range rawRecipients {
+			name, key, ok := strings.Cut(raw, "=")
+			if !ok {
+				fmt.Fprintf(os.Stderr, "Error: recipient %q must be in the form name=public_key\n", raw)
+				os.Exit(1)
+			}
+			recipients = append(recipients, config.Recipient{Name: strings.TrimSpace(name), Key: strings.TrimSpace(key)})
 		}
 
 		// If no recipients specified, default to local machine key
@@ -82,7 +113,11 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			recipients = append(recipients, pubKey)
+			name := "default"
+			if u, err := user.Current(); err == nil && u.Username != "" {
+				name = u.Username
+			}
+			recipients = append(recipients, config.Recipient{Name: name, Key: pubKey})
 		}
 
 		if err := config.Init(recipients, *force); err != nil {
@@ -91,12 +126,12 @@ func main() {
 		}
 		fmt.Printf("Initialized %s with %d recipient(s):\n", config.ConfigFileName, len(recipients))
 		for _, r := range recipients {
-			fmt.Printf("  - %s\n", r)
+			fmt.Printf("  - %s (%s)\n", r.Name, r.Key)
 		}
 
 	case "recipient":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: cloak recipient <list|add|remove> [key]")
+			fmt.Println(recipientUsage)
 			os.Exit(1)
 		}
 
@@ -109,15 +144,29 @@ func main() {
 			}
 			fmt.Printf("Configured recipients in %s:\n", config.ConfigFileName)
 			for i, r := range cfg.Recipients {
-				fmt.Printf("  %d. %s\n", i+1, r)
+				fmt.Printf("  %d. %-20s %-11s %s\n", i+1, r.Name, r.Kind, r.Key)
 			}
 
 		case "add":
-			if len(os.Args) < 4 {
-				fmt.Println("Usage: cloak recipient add <public_key_hex>")
+			addCmd := flag.NewFlagSet("recipient add", flag.ExitOnError)
+			name := addCmd.String("name", "", "Unique recipient name (required)")
+			kind := addCmd.String("kind", config.KindUser, "Recipient kind: user, ci or breakglass")
+			// Allow the key before or after the flags.
+			args := os.Args[3:]
+			var keyToAdd string
+			if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+				keyToAdd, args = args[0], args[1:]
+			}
+			if err := addCmd.Parse(args); err != nil {
+				os.Exit(2)
+			}
+			if keyToAdd == "" && addCmd.NArg() == 1 {
+				keyToAdd = addCmd.Arg(0)
+			}
+			if keyToAdd == "" || *name == "" {
+				fmt.Println("Usage: cloak recipient add <public_key_hex> --name <name> [--kind user|ci|breakglass]")
 				os.Exit(1)
 			}
-			keyToAdd := os.Args[3]
 
 			cfg, err := config.Load()
 			if err != nil {
@@ -125,11 +174,11 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := cfg.AddRecipient(keyToAdd); err != nil {
+			if err := cfg.AddRecipient(*name, keyToAdd, *kind); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Added recipient: %s\n", keyToAdd)
+			fmt.Printf("Added recipient: %s (%s)\n", *name, keyToAdd)
 			fmt.Println("Rotating DEK and re-keying project files...")
 			if err := engine.Rekey(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error re-keying: %v\n", err)
@@ -138,10 +187,9 @@ func main() {
 
 		case "remove":
 			if len(os.Args) < 4 {
-				fmt.Println("Usage: cloak recipient remove <public_key_hex>")
+				fmt.Println("Usage: cloak recipient remove <name|public_key_hex>")
 				os.Exit(1)
 			}
-			keyToRemove := os.Args[3]
 
 			cfg, err := config.Load()
 			if err != nil {
@@ -149,11 +197,12 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := cfg.RemoveRecipient(keyToRemove); err != nil {
+			removed, err := cfg.RemoveRecipient(os.Args[3])
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Removed recipient: %s\n", keyToRemove)
+			fmt.Printf("Removed recipient: %s (%s)\n", removed.Name, removed.Key)
 			fmt.Println("Rotating DEK and re-keying project files...")
 			if err := engine.Rekey(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error re-keying: %v\n", err)
@@ -161,7 +210,7 @@ func main() {
 			}
 
 		default:
-			fmt.Println("Usage: cloak recipient <list|add|remove> [key]")
+			fmt.Println(recipientUsage)
 			os.Exit(1)
 		}
 
@@ -202,14 +251,18 @@ func main() {
 	}
 }
 
+const recipientUsage = "Usage: cloak recipient <list|add|remove> [args]"
+
 func printUsage() {
 	fmt.Println("Usage: cloak <command> [options]")
 	fmt.Println("\nCommands:")
-	fmt.Println("  keygen    [-f|--force]                  Generate a new X25519 identity keypair")
-	fmt.Println("  init      [-f] [-r <key> ...]           Create a .cloak.yaml config file")
+	fmt.Println("  keygen    [-f] [-o|--out|--output <file>] [--stdout] [--name <label>]")
+	fmt.Println("                                          Generate a new X25519 identity keypair")
+	fmt.Println("  init      [-f] [-r <name>=<key> ...]    Create a .cloak.yaml config file")
 	fmt.Println("  recipient list                          List all project recipients")
-	fmt.Println("  recipient add <key>                     Add recipient & rekey files")
-	fmt.Println("  recipient remove <key>                  Remove recipient & rekey files")
+	fmt.Println("  recipient add <key> --name <name> [--kind user|ci|breakglass]")
+	fmt.Println("                                          Add recipient & rekey files")
+	fmt.Println("  recipient remove <name|key>             Remove recipient & rekey files")
 	fmt.Println("  rekey                                   Rotate DEK and re-encrypt files")
 	fmt.Println("  encrypt                                 Encrypt all matching project files in-place")
 	fmt.Println("  decrypt                                 Decrypt all matching project files in-place")

@@ -86,11 +86,12 @@ cloak decrypt
 # List active recipients
 cloak recipient list
 
-# Add recipient (rotates DEK & rekeys files)
-cloak recipient add <public_key_hex>
+# Add a named recipient (rotates DEK & rekeys files)
+# kind is one of: user (default), ci, breakglass
+cloak recipient add <public_key_hex> --name alice --kind user
 
-# Remove recipient (rotates DEK to revoke access)
-cloak recipient remove <public_key_hex>
+# Remove a recipient by name or key (rotates DEK to revoke access)
+cloak recipient remove alice
 
 # Rotate data key manually
 cloak rekey
@@ -98,11 +99,55 @@ cloak rekey
 
 ---
 
+## CI/CD and Break-Glass Keys
+
+`cloak keygen` can create additional identities beyond your personal one. A new key can only decrypt a project once its public key has been added as a recipient.
+
+### Pipeline key
+```bash
+cloak keygen -o ci.key --name ci-deploy        # -o, --out and --output are equivalent
+cloak recipient add <public_key> --name ci-deploy --kind ci
+```
+Store the contents of `ci.key` in your CI secret store, then delete the local file. Cloak resolves the private key in this order:
+
+1. `CLOAK_KEY` environment variable (the key hex, or the full key file content)
+2. `CLOAK_KEY_FILE` environment variable (path to a key file)
+3. `~/.config/cloak/key.txt`
+
+GitHub Actions example:
+```yaml
+- name: Decrypt secrets
+  env:
+    CLOAK_KEY: ${{ secrets.CLOAK_KEY }}
+  run: cloak decrypt
+```
+
+### Break-glass key
+Print the key to stdout instead of writing it to disk. The key goes to stdout and the public key to stderr:
+```bash
+cloak keygen --stdout --name breakglass > breakglass.key
+cloak recipient add <public_key> --name breakglass --kind breakglass
+```
+Move `breakglass.key` into offline storage (password manager, safe) and delete the local copy. To revoke a leaked key, run `cloak recipient remove <name>`, which rotates the data key.
+
+### keygen options
+
+| Flag | Description |
+|---|---|
+| `-o`, `--out`, `--output <file>` | Write the key to a custom path (mode 0600) |
+| `--stdout` | Print the key instead of writing a file |
+| `--name <label>` | Label stored in the key file header |
+| `-f`, `--force` | Overwrite an existing key file |
+
+---
+
 ## Configuration Example (.cloak.yaml)
 
 ```yaml
 recipients:
-  - 24e1679ae9ae7a0828bd10afc2a44ce1a4c1a5a8df9382ca4f8756efe8854d07
+  - name: antony
+    key: 24e1679ae9ae7a0828bd10afc2a44ce1a4c1a5a8df9382ca4f8756efe8854d07
+    kind: user          # user (default) | ci | breakglass
 
 exclude:
   - .git
@@ -146,12 +191,12 @@ rules:
 
 | Command | Description |
 |---|---|
-| ```cloak keygen [-f]``` | Generate local X25519 identity keypair |
-| ```cloak init [-f] [-r <key> ...]``` | Create .cloak.yaml configuration |
+| ```cloak keygen [-f] [-o <file>] [--stdout] [--name <label>]``` | Generate an X25519 identity keypair |
+| ```cloak init [-f] [-r <name>=<key> ...]``` | Create .cloak.yaml configuration |
 | ```cloak encrypt``` | Encrypt all matching project files in-place |
 | ```cloak decrypt``` | Decrypt all matching project files in-place |
 | ```cloak recipient list``` | Display configured project recipients |
-| ```cloak recipient add <key>``` | Add recipient public key and rekey files |
-| ```cloak recipient remove <key>``` | Remove recipient public key and rekey files |
+| ```cloak recipient add <key> --name <n> [--kind <k>]``` | Add a named recipient and rekey files |
+| ```cloak recipient remove <name\|key>``` | Remove a recipient and rekey files |
 | ```cloak rekey``` | Rotate data key and re-encrypt files |
 | ```cloak version``` | Display binary build and version info |
