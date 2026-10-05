@@ -101,3 +101,31 @@ func TestExtract(t *testing.T) {
 		})
 	}
 }
+
+func TestYamlMultiDocument(t *testing.T) {
+	input := []byte("a: 1\npassword: x\n---\nb: 2\npassword: y\n")
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enc, err := f.Encrypt(input, []string{"password"}, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(enc)
+	if strings.Contains(out, "password: x") || strings.Contains(out, "password: y") {
+		t.Fatalf("plaintext left in output:\n%s", out)
+	}
+	if !strings.Contains(out, "b: 2") || strings.Count(out, "---") != 1 {
+		t.Fatalf("second document lost:\n%s", out)
+	}
+
+	dec, err := f.Decrypt(enc, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(dec) != string(input) {
+		t.Fatalf("round trip mismatch:\n%s", dec)
+	}
+}
