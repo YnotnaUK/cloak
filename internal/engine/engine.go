@@ -139,33 +139,33 @@ func resolveFile(cfg *config.Config, path string) (*config.Rule, error) {
 	return rule, nil
 }
 
-func loadForRead(path string) (*config.Rule, formats.Formatter, []byte, string, error) {
+func loadForRead(path string) (*config.Config, formats.Formatter, []byte, string, *config.Rule, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, nil, nil, "", err
+		return nil, nil, nil, "", nil, err
 	}
 	rule, err := resolveFile(cfg, path)
 	if err != nil {
-		return nil, nil, nil, "", err
+		return nil, nil, nil, "", nil, err
 	}
 	formatter, err := formats.Get(rule.Type)
 	if err != nil {
-		return nil, nil, nil, "", err
+		return nil, nil, nil, "", nil, err
 	}
 	privKey, err := cryptoPrivateKeyLoader()
 	if err != nil {
-		return nil, nil, nil, "", err
+		return nil, nil, nil, "", nil, err
 	}
 	content, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return nil, nil, nil, "", fmt.Errorf("failed reading %s: %w", path, err)
+		return nil, nil, nil, "", nil, fmt.Errorf("failed reading %s: %w", path, err)
 	}
-	return rule, formatter, content, privKey, nil
+	return cfg, formatter, content, privKey, rule, nil
 }
 
 // DecryptFile returns the decrypted content of a file without touching disk.
 func DecryptFile(path string) ([]byte, error) {
-	_, formatter, content, privKey, err := loadForRead(path)
+	_, formatter, content, privKey, _, err := loadForRead(path)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func DecryptFile(path string) ([]byte, error) {
 
 // ExtractValue returns a single decrypted value from a file without touching disk.
 func ExtractValue(path, keyPath string) ([]byte, error) {
-	_, formatter, content, privKey, err := loadForRead(path)
+	_, formatter, content, privKey, _, err := loadForRead(path)
 	if err != nil {
 		return nil, err
 	}

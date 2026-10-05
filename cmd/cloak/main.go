@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -252,6 +253,31 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "edit":
+		editCmd := flag.NewFlagSet("edit", flag.ExitOnError)
+		files, err := parseInterspersed(editCmd, os.Args[2:])
+		if err != nil {
+			os.Exit(2)
+		}
+		if len(files) != 1 {
+			fmt.Println("Usage: cloak edit <file>")
+			os.Exit(1)
+		}
+
+		res, err := engine.Edit(files[0], engine.EditOptions{Retry: promptRetry})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			if res.KeptPath != "" {
+				fmt.Fprintf(os.Stderr, "Your edits (plaintext) were left at %s; delete it when done.\n", res.KeptPath)
+			}
+			os.Exit(1)
+		}
+		if res.Changed {
+			fmt.Fprintf(os.Stderr, "Updated: %s\n", files[0])
+		} else {
+			fmt.Fprintln(os.Stderr, "No changes made.")
+		}
+
 	case "version":
 		fmt.Printf("cloak %s (commit: %s, built at: %s)\n", Version, Commit, Date)
 		if latest, hasUpdate := updater.CheckLatest(Version); hasUpdate {
@@ -325,6 +351,13 @@ func runDecrypt(files []string, inPlace bool, extract string, noNewline bool) er
 	return err
 }
 
+func promptRetry(reason error) bool {
+	fmt.Fprintf(os.Stderr, "Error: %v\nReopen the editor? [Y/n] ", reason)
+	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "" || answer == "y" || answer == "yes"
+}
+
 func printUsage() {
 	fmt.Println("Usage: cloak <command> [options]")
 	fmt.Println("\nCommands:")
@@ -335,6 +368,7 @@ func printUsage() {
 	fmt.Println("  recipient add <key> --name <name> [--kind user|ci|breakglass]")
 	fmt.Println("                                          Add recipient & rekey files")
 	fmt.Println("  recipient remove <name|key>             Remove recipient & rekey files")
+	fmt.Println("  edit      <file>                        Edit a secret file in $EDITOR, re-encrypting on save")
 	fmt.Println("  rekey                                   Rotate DEK and re-encrypt files")
 	fmt.Println("  encrypt   [file ...]                    Encrypt files in-place (all matching files if none given)")
 	fmt.Println("  decrypt   <file>                        Print the decrypted file to stdout")
