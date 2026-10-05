@@ -13,7 +13,7 @@ import (
 type JsonFormatter struct{}
 
 func (j *JsonFormatter) Encrypt(content []byte, targetKeys []string, encryptFn func([]byte) (string, error)) ([]byte, error) {
-	var data map[string]any
+	var data any
 	if err := json.Unmarshal(content, &data); err != nil {
 		return nil, fmt.Errorf("invalid json: %w", err)
 	}
@@ -23,7 +23,7 @@ func (j *JsonFormatter) Encrypt(content []byte, targetKeys []string, encryptFn f
 		keySet[k] = true
 	}
 
-	if err := walkMapEncrypt(data, keySet, encryptFn); err != nil {
+	if err := walkEncrypt(data, keySet, encryptFn); err != nil {
 		return nil, err
 	}
 
@@ -31,63 +31,82 @@ func (j *JsonFormatter) Encrypt(content []byte, targetKeys []string, encryptFn f
 }
 
 func (j *JsonFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, error)) ([]byte, error) {
-	var data map[string]any
+	var data any
 	if err := json.Unmarshal(content, &data); err != nil {
 		return nil, fmt.Errorf("invalid json: %w", err)
 	}
 
-	if err := walkMapDecrypt(data, decryptFn); err != nil {
+	if err := walkDecrypt(data, decryptFn); err != nil {
 		return nil, err
 	}
 
 	return json.MarshalIndent(data, "", "  ")
 }
 
-func walkMapEncrypt(m map[string]any, keys map[string]bool, encryptFn func([]byte) (string, error)) error {
-	for k, v := range m {
-		switch val := v.(type) {
-		case map[string]any:
-			if err := walkMapEncrypt(val, keys, encryptFn); err != nil {
-				return err
+func walkEncrypt(v any, keys map[string]bool, encryptFn func([]byte) (string, error)) error {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			if !keys[k] {
+				if err := walkEncrypt(child, keys, encryptFn); err != nil {
+					return err
+				}
+				continue
 			}
-		case string:
-			if keys[k] {
-				if strings.HasPrefix(val, crypto.Prefix) {
+			switch c := child.(type) {
+			case string:
+				if strings.HasPrefix(c, crypto.Prefix) {
 					continue // Already encrypted
 				}
-				enc, err := encryptFn([]byte(val))
+				enc, err := encryptFn([]byte(c))
 				if err != nil {
 					return fmt.Errorf("failed encrypting key %s: %w", k, err)
 				}
-				m[k] = enc
+				val[k] = enc
+			case map[string]any:
+				if err := walkEncrypt(c, keys, encryptFn); err != nil {
+					return err
+				}
+			default:
+				enc, err := encryptFn([]byte(fmt.Sprintf("%v", c)))
+				if err != nil {
+					return fmt.Errorf("failed encrypting key %s: %w", k, err)
+				}
+				val[k] = enc
 			}
-		default:
-			if keys[k] {
-				enc, err := encryptFn([]byte(fmt.Sprintf("%v", val)))
-				if err != nil {
-					return fmt.Errorf("failed encrypting key %s: %w", k, err)
-				}
-				m[k] = enc
+		}
+	case []any:
+		for _, child := range val {
+			if err := walkEncrypt(child, keys, encryptFn); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
 }
 
-func walkMapDecrypt(m map[string]any, decryptFn func(string) ([]byte, error)) error {
-	for k, v := range m {
-		switch val := v.(type) {
-		case map[string]any:
-			if err := walkMapDecrypt(val, decryptFn); err != nil {
+func walkDecrypt(v any, decryptFn func(string) ([]byte, error)) error {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, child := range val {
+			if s, ok := child.(string); ok {
+				if strings.HasPrefix(s, crypto.Prefix) {
+					dec, err := decryptFn(s)
+					if err != nil {
+						return fmt.Errorf("failed decrypting key %s: %w", k, err)
+					}
+					val[k] = string(dec)
+				}
+				continue
+			}
+			if err := walkDecrypt(child, decryptFn); err != nil {
 				return err
 			}
-		case string:
-			if strings.HasPrefix(val, crypto.Prefix) {
-				dec, err := decryptFn(val)
-				if err != nil {
-					return fmt.Errorf("failed decrypting key %s: %w", k, err)
-				}
-				m[k] = string(dec)
+		}
+	case []any:
+		for _, child := range val {
+			if err := walkDecrypt(child, decryptFn); err != nil {
+				return err
 			}
 		}
 	}
