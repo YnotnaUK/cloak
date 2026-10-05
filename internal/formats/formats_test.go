@@ -1,6 +1,8 @@
 package formats_test
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -154,5 +156,46 @@ func TestJsonArrays(t *testing.T) {
 		if !strings.Contains(string(dec), "plain1") || !strings.Contains(string(dec), "plain2") {
 			t.Fatalf("decrypt failed:\n%s", dec)
 		}
+	}
+}
+
+func TestJsonNonStringValues(t *testing.T) {
+	f, err := formats.Get("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := `{"a":null,"b":["x","y"],"c":12345678901234567890,"d":true,"e":1.50,"f":"\u0000json:literal","g":"text","h":{"k":1}}`
+	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+
+	enc, err := f.Encrypt([]byte(input), keys, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := f.Decrypt(enc, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got, want map[string]any
+	if err := json.Unmarshal(dec, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(input), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip mismatch:\n got %s\nwant %s", dec, input)
+	}
+	if !strings.Contains(string(dec), "12345678901234567890") || !strings.Contains(string(dec), "1.50") {
+		t.Fatalf("number precision lost:\n%s", dec)
+	}
+
+	out, err := f.Extract(enc, "b", mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != `["x","y"]` {
+		t.Fatalf("unexpected extract: %s", out)
 	}
 }
