@@ -82,6 +82,20 @@ cloak decrypt -i config/app.yaml               # decrypt one file in-place
 cloak decrypt -i                               # decrypt every matching file in-place
 ```
 
+### 5. Edit Secrets
+`cloak edit` decrypts a file into a private temporary file, opens it in your editor, and re-encrypts it when you save and quit:
+```bash
+cloak edit config/app.yaml
+```
+
+- The editor is taken from `$VISUAL`, then `$EDITOR`, then `vi`. Editors with arguments work (`EDITOR="code --wait"`).
+- The temporary file has mode 0600 and lives in `$XDG_RUNTIME_DIR` (usually memory-backed) when set, otherwise in the system temp directory. It is deleted when the editor exits.
+- If you make no changes, the file on disk is left untouched.
+- Values under the file's `encrypted_keys` are encrypted on save, including keys you add while editing.
+- If the edited YAML or JSON no longer parses, the original is not overwritten. You are asked whether to reopen the editor; if you decline, your edits are left at the reported temporary path so they are not lost. Delete that file when you are done.
+- A crash or `kill -9` of cloak can leave the temporary file behind.
+- The file must be inside the project, match a rule in `.cloak.yaml` and not be excluded.
+
 ---
 
 ## Using Secrets in Scripts and Ansible
@@ -228,6 +242,7 @@ rules:
 | ```cloak decrypt <file>``` | Print the decrypted file to stdout |
 | ```cloak decrypt <file> -e <path> [-n]``` | Print a single decrypted value |
 | ```cloak decrypt -i [file ...]``` | Decrypt files in-place (all matching files if none given) |
+| ```cloak edit <file>``` | Edit a secret file in your editor and re-encrypt on save |
 | ```cloak recipient list``` | Display configured project recipients |
 | ```cloak recipient add <key> --name <n> [--kind <k>]``` | Add a named recipient and rekey files |
 | ```cloak recipient remove <name\|key>``` | Remove a recipient and rekey files |
