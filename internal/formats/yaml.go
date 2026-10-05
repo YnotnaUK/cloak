@@ -2,7 +2,9 @@ package formats
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -13,9 +15,9 @@ import (
 type YamlFormatter struct{}
 
 func (y *YamlFormatter) Encrypt(content []byte, targetKeys []string, encryptFn func([]byte) (string, error)) ([]byte, error) {
-	var root yaml.Node
-	if err := yaml.Unmarshal(content, &root); err != nil {
-		return nil, fmt.Errorf("invalid yaml: %w", err)
+	docs, err := decodeYamlDocs(content)
+	if err != nil {
+		return nil, err
 	}
 
 	keySet := make(map[string]bool, len(targetKeys))
@@ -23,33 +25,53 @@ func (y *YamlFormatter) Encrypt(content []byte, targetKeys []string, encryptFn f
 		keySet[k] = true
 	}
 
-	if err := walkYamlEncrypt(&root, keySet, encryptFn); err != nil {
-		return nil, err
+	for _, doc := range docs {
+		if err := walkYamlEncrypt(doc, keySet, encryptFn); err != nil {
+			return nil, err
+		}
 	}
-
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return encodeYamlDocs(docs)
 }
 
 func (y *YamlFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, error)) ([]byte, error) {
-	var root yaml.Node
-	if err := yaml.Unmarshal(content, &root); err != nil {
-		return nil, fmt.Errorf("invalid yaml: %w", err)
-	}
-
-	if err := walkYamlDecrypt(&root, decryptFn); err != nil {
+	docs, err := decodeYamlDocs(content)
+	if err != nil {
 		return nil, err
 	}
 
+	for _, doc := range docs {
+		if err := walkYamlDecrypt(doc, decryptFn); err != nil {
+			return nil, err
+		}
+	}
+	return encodeYamlDocs(docs)
+}
+
+func decodeYamlDocs(content []byte) ([]*yaml.Node, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(content))
+	var docs []*yaml.Node
+	for {
+		var doc yaml.Node
+		if err := dec.Decode(&doc); err != nil {
+			if errors.Is(err, io.EOF) {
+				return docs, nil
+			}
+			return nil, fmt.Errorf("invalid yaml: %w", err)
+		}
+		docs = append(docs, &doc)
+	}
+}
+
+func encodeYamlDocs(docs []*yaml.Node) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
+	for _, doc := range docs {
+		if err := enc.Encode(doc); err != nil {
+			return nil, err
+		}
+	}
+	if err := enc.Close(); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
