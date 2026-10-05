@@ -64,3 +64,40 @@ func TestFullFormatter(t *testing.T) {
 		t.Fatalf("expected %q, got %q", string(input), string(dec))
 	}
 }
+
+func TestExtract(t *testing.T) {
+	tests := []struct {
+		name, format, input, path, want string
+		wantErr                         bool
+	}{
+		{"yaml nested encrypted", "yaml", "db:\n  password: " + crypto.Prefix + "mock:s3cret\n", "db.password", "s3cret", false},
+		{"yaml plaintext", "yaml", "app: web\n", "app", "web", false},
+		{"yaml sequence", "yaml", "servers:\n  - token: " + crypto.Prefix + "mock:abc\n", "servers.0.token", "abc", false},
+		{"yaml missing", "yaml", "app: web\n", "nope", "", true},
+		{"yaml map is not scalar", "yaml", "db:\n  a: 1\n", "db", "", true},
+		{"json nested", "json", `{"db":{"password":"` + crypto.Prefix + `mock:pw"}}`, "db.password", "pw", false},
+		{"json number", "json", `{"replicas":3}`, "replicas", "3", false},
+		{"json array", "json", `{"a":["x","y"]}`, "a.1", "y", false},
+		{"json missing", "json", `{"a":1}`, "b", "", true},
+		{"json object is not scalar", "json", `{"a":{"b":1}}`, "a", "", true},
+		{"env encrypted", "env", "APP=web\nPASSWORD=" + crypto.Prefix + "mock:pw\n", "PASSWORD", "pw", false},
+		{"env plaintext", "env", "APP=web\n", "APP", "web", false},
+		{"env missing", "env", "APP=web\n", "NOPE", "", true},
+		{"full unsupported", "full", crypto.Prefix + "mock:x\n", "any", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := formats.Get(tc.format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.Extract([]byte(tc.input), tc.path, mockDecrypt)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if string(got) != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

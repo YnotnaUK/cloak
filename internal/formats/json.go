@@ -1,8 +1,10 @@
 package formats
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/ynotnauk/cloak/internal/crypto"
@@ -90,4 +92,44 @@ func walkMapDecrypt(m map[string]any, decryptFn func(string) ([]byte, error)) er
 		}
 	}
 	return nil
+}
+
+func (j *JsonFormatter) Extract(content []byte, path string, decryptFn func(string) ([]byte, error)) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(content))
+	dec.UseNumber()
+	var cur any
+	if err := dec.Decode(&cur); err != nil {
+		return nil, fmt.Errorf("invalid json: %w", err)
+	}
+
+	for _, part := range splitPath(path) {
+		switch node := cur.(type) {
+		case map[string]any:
+			next, ok := node[part]
+			if !ok {
+				return nil, notFound(path)
+			}
+			cur = next
+		case []any:
+			idx, err := strconv.Atoi(part)
+			if err != nil || idx < 0 || idx >= len(node) {
+				return nil, notFound(path)
+			}
+			cur = node[idx]
+		default:
+			return nil, notFound(path)
+		}
+	}
+
+	switch v := cur.(type) {
+	case map[string]any, []any:
+		return nil, notScalar(path)
+	case string:
+		if strings.HasPrefix(v, crypto.Prefix) {
+			return decryptFn(v)
+		}
+		return []byte(v), nil
+	default:
+		return []byte(fmt.Sprintf("%v", v)), nil
+	}
 }

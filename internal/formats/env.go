@@ -96,3 +96,26 @@ func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, e
 
 	return out.Bytes(), scanner.Err()
 }
+
+func (e *EnvFormatter) Extract(content []byte, path string, decryptFn func(string) ([]byte, error)) ([]byte, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(content))
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || !strings.Contains(line, "=") {
+			continue
+		}
+		k, v, _ := strings.Cut(line, "=")
+		if strings.TrimSpace(k) != path {
+			continue
+		}
+		if strings.HasPrefix(v, crypto.Prefix) {
+			return decryptFn(v)
+		}
+		return []byte(v), nil
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nil, notFound(path)
+}
