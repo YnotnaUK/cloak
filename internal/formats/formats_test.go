@@ -129,3 +129,30 @@ func TestYamlMultiDocument(t *testing.T) {
 		t.Fatalf("round trip mismatch:\n%s", dec)
 	}
 }
+
+func TestJsonArrays(t *testing.T) {
+	f, err := formats.Get("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, input := range []string{
+		`{"servers":[{"password":"plain1"},[{"password":"plain2"}]]}`,
+		`[{"password":"plain1"},{"nested":{"password":"plain2"}}]`,
+	} {
+		enc, err := f.Encrypt([]byte(input), []string{"password"}, mockEncrypt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(enc), `"plain`) {
+			t.Fatalf("plaintext left in output:\n%s", enc)
+		}
+		dec, err := f.Decrypt(enc, mockDecrypt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(dec), "plain1") || !strings.Contains(string(dec), "plain2") {
+			t.Fatalf("decrypt failed:\n%s", dec)
+		}
+	}
+}
