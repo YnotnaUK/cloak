@@ -1,6 +1,7 @@
 package formats
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/ynotnauk/cloak/internal/crypto"
@@ -27,4 +28,8 @@ func (f *FullFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, 
 		return content, nil // Already decrypted / plaintext
 	}
 	return decryptFn(encStr)
+}
+
+func (f *FullFormatter) Extract(_ []byte, _ string, _ func(string) ([]byte, error)) ([]byte, error) {
+	return nil, fmt.Errorf("--extract is not supported for full-file rules; decrypt the whole file instead")
 }

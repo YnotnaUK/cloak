@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -221,13 +222,32 @@ func main() {
 		}
 
 	case "encrypt":
-		if err := engine.Process(false); err != nil {
+		encryptCmd := flag.NewFlagSet("encrypt", flag.ExitOnError)
+		files, err := parseInterspersed(encryptCmd, os.Args[2:])
+		if err != nil {
+			os.Exit(2)
+		}
+		if err := engine.Process(false, files); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 
 	case "decrypt":
-		if err := engine.Process(true); err != nil {
+		decryptCmd := flag.NewFlagSet("decrypt", flag.ExitOnError)
+		var inPlace, noNewline bool
+		var extract string
+		decryptCmd.BoolVar(&inPlace, "in-place", false, "Write plaintext back to the file(s) on disk")
+		decryptCmd.BoolVar(&inPlace, "i", false, "Shorthand for --in-place")
+		decryptCmd.StringVar(&extract, "extract", "", "Print a single value by dot-separated path")
+		decryptCmd.StringVar(&extract, "e", "", "Shorthand for --extract")
+		decryptCmd.BoolVar(&noNewline, "no-newline", false, "Omit the trailing newline after an extracted value")
+		decryptCmd.BoolVar(&noNewline, "n", false, "Shorthand for --no-newline")
+		files, err := parseInterspersed(decryptCmd, os.Args[2:])
+		if err != nil {
+			os.Exit(2)
+		}
+
+		if err := runDecrypt(files, inPlace, extract, noNewline); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -253,6 +273,58 @@ func main() {
 
 const recipientUsage = "Usage: cloak recipient <list|add|remove> [args]"
 
+// parseInterspersed parses flags that may appear before or after positional arguments.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		args = fs.Args()
+		if len(args) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, args[0])
+		args = args[1:]
+	}
+}
+
+func runDecrypt(files []string, inPlace bool, extract string, noNewline bool) error {
+	if inPlace && extract != "" {
+		return errors.New("cannot combine --in-place and --extract")
+	}
+	if noNewline && extract == "" {
+		return errors.New("--no-newline requires --extract")
+	}
+
+	if inPlace {
+		return engine.Process(true, files)
+	}
+
+	if len(files) != 1 {
+		return errors.New("specify exactly one file to print (or use --in-place to decrypt files on disk)")
+	}
+
+	if extract != "" {
+		val, err := engine.ExtractValue(files[0], extract)
+		if err != nil {
+			return err
+		}
+		if !noNewline {
+			val = append(val, '\n')
+		}
+		_, err = os.Stdout.Write(val)
+		return err
+	}
+
+	out, err := engine.DecryptFile(files[0])
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(out)
+	return err
+}
+
 func printUsage() {
 	fmt.Println("Usage: cloak <command> [options]")
 	fmt.Println("\nCommands:")
@@ -264,8 +336,10 @@ func printUsage() {
 	fmt.Println("                                          Add recipient & rekey files")
 	fmt.Println("  recipient remove <name|key>             Remove recipient & rekey files")
 	fmt.Println("  rekey                                   Rotate DEK and re-encrypt files")
-	fmt.Println("  encrypt                                 Encrypt all matching project files in-place")
-	fmt.Println("  decrypt                                 Decrypt all matching project files in-place")
+	fmt.Println("  encrypt   [file ...]                    Encrypt files in-place (all matching files if none given)")
+	fmt.Println("  decrypt   <file>                        Print the decrypted file to stdout")
+	fmt.Println("  decrypt   <file> -e <path> [-n]         Print a single decrypted value")
+	fmt.Println("  decrypt   -i [file ...]                 Decrypt files in-place (all matching files if none given)")
 	fmt.Println("  version                                 Show cloak version information")
 	fmt.Println("  update                                  Self-update to the latest release")
 }

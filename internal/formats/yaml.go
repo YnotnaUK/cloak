@@ -3,6 +3,7 @@ package formats
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/ynotnauk/cloak/internal/crypto"
@@ -113,4 +114,55 @@ func walkYamlDecrypt(node *yaml.Node, decryptFn func(string) ([]byte, error)) er
 		}
 	}
 	return nil
+}
+
+func (y *YamlFormatter) Extract(content []byte, path string, decryptFn func(string) ([]byte, error)) ([]byte, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(content, &root); err != nil {
+		return nil, fmt.Errorf("invalid yaml: %w", err)
+	}
+
+	cur := &root
+	if cur.Kind == yaml.DocumentNode && len(cur.Content) > 0 {
+		cur = cur.Content[0]
+	}
+
+	for _, part := range splitPath(path) {
+		for cur.Kind == yaml.AliasNode && cur.Alias != nil {
+			cur = cur.Alias
+		}
+		switch cur.Kind {
+		case yaml.MappingNode:
+			var next *yaml.Node
+			for i := 0; i+1 < len(cur.Content); i += 2 {
+				if cur.Content[i].Value == part {
+					next = cur.Content[i+1]
+					break
+				}
+			}
+			if next == nil {
+				return nil, notFound(path)
+			}
+			cur = next
+		case yaml.SequenceNode:
+			idx, err := strconv.Atoi(part)
+			if err != nil || idx < 0 || idx >= len(cur.Content) {
+				return nil, notFound(path)
+			}
+			cur = cur.Content[idx]
+		default:
+			return nil, notFound(path)
+		}
+	}
+
+	for cur.Kind == yaml.AliasNode && cur.Alias != nil {
+		cur = cur.Alias
+	}
+	if cur.Kind != yaml.ScalarNode {
+		return nil, notScalar(path)
+	}
+	if strings.HasPrefix(cur.Value, crypto.Prefix) {
+		return decryptFn(cur.Value)
+	}
+	return []byte(cur.Value), nil
 }

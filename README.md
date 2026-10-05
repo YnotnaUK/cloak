@@ -67,16 +67,47 @@ cloak init
 ```
 
 ### 3. Encrypt Project Files
-Encrypts all matching files in-place according to .cloak.yaml rules:
+Encrypts all matching files in-place according to .cloak.yaml rules, or only the files you name:
 ```bash
 cloak encrypt
+cloak encrypt config/app.yaml
 ```
 
-### 4. Decrypt Project Files
-Restores all files to plaintext in-place using your local private key:
+### 4. Decrypt
+`cloak decrypt` never writes plaintext to disk unless you ask for it with `--in-place`.
 ```bash
-cloak decrypt
+cloak decrypt config/app.yaml                  # print the decrypted file to stdout
+cloak decrypt config/app.yaml -e db.password   # print a single value
+cloak decrypt -i config/app.yaml               # decrypt one file in-place
+cloak decrypt -i                               # decrypt every matching file in-place
 ```
+
+---
+
+## Using Secrets in Scripts and Ansible
+
+`--extract` (`-e`) prints one decrypted value and nothing else, so it is safe to capture:
+
+```bash
+DB_PASSWORD=$(cloak decrypt config/app.yaml -e db.password)
+```
+
+```yaml
+- name: Read database password
+  ansible.builtin.set_fact:
+    db_password: "{{ lookup('ansible.builtin.pipe', 'cloak decrypt config/app.yaml -e db.password') }}"
+  no_log: true
+```
+
+Notes:
+- Paths are dot-separated (`db.password`). YAML and JSON arrays use an index (`servers.0.token`). `.env` files use the plain variable name.
+- Values that were never encrypted are returned as is.
+- Use `-n` (`--no-newline`) to omit the trailing newline.
+- Maps and lists cannot be extracted, and `--extract` is not supported for `full` file rules.
+- Errors go to stderr with a non-zero exit code, so nothing is printed to stdout on failure.
+- The file must be inside the project and match a rule in `.cloak.yaml`. Excluded files are refused.
+- Printing a YAML or JSON file to stdout re-serialises it, so blank lines may be dropped. Comments in YAML are kept.
+- The private key is resolved as described in [CI/CD and Break-Glass Keys](#cicd-and-break-glass-keys).
 
 ---
 
@@ -119,7 +150,7 @@ GitHub Actions example:
 - name: Decrypt secrets
   env:
     CLOAK_KEY: ${{ secrets.CLOAK_KEY }}
-  run: cloak decrypt
+  run: cloak decrypt -i
 ```
 
 ### Break-glass key
@@ -193,8 +224,10 @@ rules:
 |---|---|
 | ```cloak keygen [-f] [-o <file>] [--stdout] [--name <label>]``` | Generate an X25519 identity keypair |
 | ```cloak init [-f] [-r <name>=<key> ...]``` | Create .cloak.yaml configuration |
-| ```cloak encrypt``` | Encrypt all matching project files in-place |
-| ```cloak decrypt``` | Decrypt all matching project files in-place |
+| ```cloak encrypt [file ...]``` | Encrypt files in-place (all matching files if none given) |
+| ```cloak decrypt <file>``` | Print the decrypted file to stdout |
+| ```cloak decrypt <file> -e <path> [-n]``` | Print a single decrypted value |
+| ```cloak decrypt -i [file ...]``` | Decrypt files in-place (all matching files if none given) |
 | ```cloak recipient list``` | Display configured project recipients |
 | ```cloak recipient add <key> --name <n> [--kind <k>]``` | Add a named recipient and rekey files |
 | ```cloak recipient remove <name\|key>``` | Remove a recipient and rekey files |
