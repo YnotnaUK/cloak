@@ -76,6 +76,8 @@ CI runs lint and tests once before publishing releases from qualifying pushes:
 - Tags point to the exact built commit. Publication is serialised; timestamp
   collisions fail explicitly rather than replacing a tag. GitHub concurrency
   can replace a pending run with a newer run when several pushes arrive together.
+- Releases remain drafts until all platform binaries have uploaded successfully.
+  If an upload fails, the draft remains unpublished for investigation.
 - Retention keeps the newest 20 stable releases and, separately, the newest
   20 previews per release branch.
 

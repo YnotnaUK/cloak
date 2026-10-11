@@ -107,15 +107,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          OPTIONS=(--latest)
+          OPTIONS=()
           if [[ "$PREVIEW" == true ]]; then
-            OPTIONS=(--prerelease --latest=false)
+            OPTIONS=(--prerelease)
           fi
-          gh release create "$TAG_NAME" dist/* \
+          gh release create "$TAG_NAME" \
+            --draft \
             --target "$GITHUB_SHA" \
             --title "Release $TAG_NAME" \
             --generate-notes \
             "${OPTIONS[@]}"
+          gh release upload "$TAG_NAME" dist/*
+          OPTIONS=(--latest)
+          if [[ "$PREVIEW" == true ]]; then
+            OPTIONS=(--latest=false)
+          fi
+          gh release edit "$TAG_NAME" --draft=false "${OPTIONS[@]}"
 
       - name: Prune Old Releases
         if: steps.prepare.outputs.publish == 'true'
