@@ -247,6 +247,12 @@ Move `breakglass.key` into offline storage (password manager, safe) and delete t
 
 ## Configuration Example (.cloak.yaml)
 
+Rules are validated before any files are processed. Each `type` must be one of
+`full`, `env`, `json` or `yaml`, and each `path_regex` must be a valid Go regular
+expression. Invalid rules fail with a rule index and error, even if they would
+not match the requested file. Patterns are compiled once when the config is
+loaded; the first matching rule wins.
+
 ```yaml
 recipients:
   - name: antony
