@@ -50,6 +50,30 @@ cd cloak
 make install
 ```
 
+### Release Policy
+
+CI runs lint and tests once before publishing releases from qualifying pushes:
+
+- `main` publishes stable tags such as `v0.2.0`. An existing tag is never replaced;
+  bump [VERSION](VERSION) to publish a new stable version.
+- `release/<major>.<minor>` publishes prereleases such as
+  `v0.2.0-preview.20261011155536`. The suffix is a UTC timestamp, so previews
+  with the same base version sort chronologically under SemVer.
+- [VERSION](VERSION) must contain a full `major.minor.patch` version, and its
+  major/minor must match the release branch (for example, `0.2.0` on `release/0.2`).
+- Publication requires changes under `cmd/` or `internal/`, or to `go.mod`,
+  `go.sum` or `VERSION`. Creating a branch also qualifies.
+- Tags point to the exact built commit. Publication is serialised; timestamp
+  collisions fail explicitly rather than replacing a tag. GitHub concurrency
+  can replace a pending run with a newer run when several pushes arrive together.
+- Retention keeps the newest 20 stable releases and, separately, the newest
+  20 previews per release branch.
+
+The install script and `cloak update` use the latest stable release. To try a
+preview, download the binary for your platform from the
+[releases page](https://github.com/ynotnauk/cloak/releases) and install it manually.
+Running `cloak update` from a preview installs the latest stable release.
+
 ---
 
 ## Quick Start

@@ -1,35 +1,91 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'cmd/**'
-      - 'internal/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'VERSION'
+  workflow_call:
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    concurrency:
+      group: cloak-releases
+      cancel-in-progress: false
     permissions:
       contents: write # Needed to create releases
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Prepare Release
+        id: prepare
+        env:
+          BEFORE: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != push ]] || [[ "$GITHUB_REF_NAME" != main && "$GITHUB_REF_NAME" != release/* ]]; then
+            echo "::error::Releases require a push to main or a release branch."
+            exit 1
+          fi
+
+          if [[ "$BEFORE" != 0000000000000000000000000000000000000000 ]]; then
+            git cat-file -e "${BEFORE}^{commit}"
+            if git diff --quiet "$BEFORE" "$GITHUB_SHA" -- cmd/ internal/ go.mod go.sum VERSION; then
+              echo "No release source changes; skipping publication."
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              DIFF_STATUS=$?
+              if [[ "$DIFF_STATUS" != 1 ]]; then
+                echo "::error::Could not determine release source changes."
+                exit "$DIFF_STATUS"
+              fi
+            fi
+          fi
+
+          BASE_VERSION=$(cat VERSION)
+          if [[ ! "$BASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::VERSION must contain a major.minor.patch version without a prefix or suffix."
+            exit 1
+          fi
+          VERSION_SERIES="${BASE_VERSION%.*}"
+          PREVIEW=false
+          TAG_NAME="v${BASE_VERSION}"
+          if [[ "$GITHUB_REF_NAME" == release/* ]]; then
+            if [[ "$GITHUB_REF_NAME" != "release/$VERSION_SERIES" ]]; then
+              echo "::error::VERSION $BASE_VERSION does not match branch $GITHUB_REF_NAME."
+              exit 1
+            fi
+            PREVIEW=true
+            TAG_NAME="v${BASE_VERSION}-preview.$(date -u +'%Y%m%d%H%M%S')"
+          fi
+
+          if git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
+            if [[ "$PREVIEW" == true ]]; then
+              echo "::error::Preview tag $TAG_NAME already exists; rerun to generate a new timestamp."
+              exit 1
+            fi
+            echo "Stable tag $TAG_NAME already exists; bump VERSION to publish another release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_ENV"
+          echo "PREVIEW=$PREVIEW" >> "$GITHUB_ENV"
+          echo "VERSION_SERIES=$VERSION_SERIES" >> "$GITHUB_ENV"
 
       - name: Set up Go
+        if: steps.prepare.outputs.publish == 'true'
         uses: actions/setup-go@v7
         with:
           go-version: 'stable'
 
       - name: Build Cross-Platform Binaries
+        if: steps.prepare.outputs.publish == 'true'
         run: |
           mkdir -p dist
-          BASE_VERSION=$(cat VERSION | tr -d '[:space:]')
-          TAG_NAME="v${BASE_VERSION}.$(date +'%Y%m%d%H%M%S')"
           COMMIT="${GITHUB_SHA:0:7}"
           BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
@@ -44,24 +100,46 @@ jobs:
           # Windows
           GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/cloak-windows-amd64.exe ./cmd/cloak
 
-          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
-
       - name: Create Release
+        if: steps.prepare.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
+          set -euo pipefail
+          OPTIONS=(--latest)
+          if [[ "$PREVIEW" == true ]]; then
+            OPTIONS=(--prerelease --latest=false)
+          fi
           gh release create "$TAG_NAME" dist/* \
+            --target "$GITHUB_SHA" \
             --title "Release $TAG_NAME" \
-            --generate-notes
+            --generate-notes \
+            "${OPTIONS[@]}"
 
       - name: Prune Old Releases
+        if: steps.prepare.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          # Fetch releases beyond the newest 20 and delete them
-          gh release list --limit 100 --json tagName --jq '.[20:][].tagName' | while read -r old_tag; do
-            if [ -n "$old_tag" ]; then
-              echo "Pruning old release: $old_tag"
-              gh release delete "$old_tag" --yes --cleanup-tag
-            fi
-          done
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$RUNNER_TEMP/cloak-releases.json"
+          jq -r -s --arg preview "$PREVIEW" --arg prefix "v${VERSION_SERIES}." '
+            add
+            | map(select(.draft == false))
+            | map(select(
+                if $preview == "true" then
+                  .prerelease == true and (.tag_name | startswith($prefix))
+                  and (.tag_name | contains("-preview."))
+                else
+                  .prerelease == false
+                end
+              ))
+            | sort_by(.published_at) | reverse | .[20:][].tag_name
+          ' "$RUNNER_TEMP/cloak-releases.json" > "$RUNNER_TEMP/cloak-prune-tags.txt"
+          while IFS= read -r old_tag; do
+            echo "Pruning old release: $old_tag"
+            gh release delete "$old_tag" --yes --cleanup-tag
+          done < "$RUNNER_TEMP/cloak-prune-tags.txt"
