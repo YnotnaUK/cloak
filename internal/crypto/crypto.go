@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const Prefix = "CLOAK:v2:"
+const Prefix = "CLOAK:v1:"
 
 var ErrNoMatchingRecipient = errors.New("no matching recipient found for local private key")
 
@@ -96,7 +96,7 @@ func Encrypt(plaintext []byte, recipients []string) (string, error) {
 		wrappedList = append(wrappedList, entry)
 	}
 
-	// Format: CLOAK:v2:<dataNonce>:<dataCiphertext>|<recip1>,<recip2>,...
+	// Format: CLOAK:v1:<dataNonce>:<dataCiphertext>|<recip1>,<recip2>,...
 	return fmt.Sprintf("%s%s:%s|%s",
 		Prefix,
 		hex.EncodeToString(dataNonce),
@@ -114,7 +114,7 @@ func Decrypt(envelope string, privKeyHex string) ([]byte, error) {
 	trimmed := strings.TrimPrefix(envelope, Prefix)
 	parts := strings.SplitN(trimmed, "|", 2)
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("malformed cloak v2 envelope")
+		return nil, fmt.Errorf("malformed cloak v1 envelope")
 	}
 
 	dataParts := strings.Split(parts[0], ":")
