@@ -9,6 +9,12 @@ A declarative, in-place secrets encryption tool inspired by SOPS and age, writte
 
 Cloak encrypts sensitive values inside structured files (.env, .json, .yaml) or entire files while leaving non-sensitive keys, comments, and structure intact.
 
+Encrypted values use the `CLOAK:v1:` envelope prefix. This intentionally replaces
+the earlier `CLOAK:v2:` label without changing the cryptographic payload.
+Existing `CLOAK:v2:` values are no longer recognised: decrypt them with the
+previous binary before upgrading, then re-encrypt them with the new binary.
+The envelope version is independent of the CLI release version.
+
 ---
 
 ## Features
