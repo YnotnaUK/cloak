@@ -43,12 +43,65 @@ Cloak encrypts sensitive values inside structured files (.env, .json, .yaml) or 
 curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/main/install.sh | bash
 ```
 
+To install the newest preview for a release series, use `--preview <major.minor>`.
+Preview selection additionally requires `jq` and checks all release pages:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/release/0.2/install.sh | bash -s -- --preview 0.2
+```
+
+The script fails if no matching preview exists or the binary download fails.
+Both modes install to `/usr/local/bin/cloak`, replacing any existing installation.
+
 ### From Source
 ```bash
 git clone https://github.com/ynotnauk/cloak.git
 cd cloak
 make install
 ```
+
+### Release Policy
+
+CI runs lint and tests once before publishing releases from qualifying pushes:
+
+- `main` publishes stable tags such as `v0.2.0`. An existing tag is never replaced;
+  bump [VERSION](VERSION) to publish a new stable version.
+- `release/<major>.<minor>` publishes prereleases such as
+  `v0.2.0-preview.20261011155536`. The suffix is a UTC timestamp, so previews
+  with the same base version sort chronologically under SemVer.
+- [VERSION](VERSION) must contain a full `major.minor.patch` version, and its
+  major/minor must match the release branch (for example, `0.2.0` on `release/0.2`).
+- Publication requires changes under `cmd/` or `internal/`, or to `go.mod`,
+  `go.sum` or `VERSION`. Creating a branch also qualifies.
+- Tags point to the exact built commit. Publication is serialised; timestamp
+  collisions fail explicitly rather than replacing a tag. GitHub concurrency
+  can replace a pending run with a newer run when several pushes arrive together.
+- Releases remain drafts until all platform binaries have uploaded successfully.
+  If an upload fails, the draft remains unpublished for investigation.
+- Retention keeps the newest 20 stable releases and, separately, the newest
+  20 previews per release branch.
+
+The install script defaults to the latest stable release; `--preview <major.minor>`
+selects the highest-version preview for that series. Preview binaries are also
+available on the [releases page](https://github.com/ynotnauk/cloak/releases).
+### Updating
+
+- `cloak update` installs the latest stable release. From a preview, it explicitly
+  reports the channel switch and warns if the stable version is older.
+- `cloak update --preview` updates the installed preview within its major/minor
+  series, including newer patch versions.
+- `cloak update --preview 0.2` selects a preview series explicitly, including
+  when currently running stable. No matching preview is an error, not a fallback
+  to stable. Preview updates refuse to install an older version.
+
+Stable installations are notified only when a newer stable version is available.
+Previews receive a periodic preview reminder, notice of newer previews in the same
+series, and notice when a matching or newer stable release is available. An older
+stable release is labelled as a channel switch, not an upgrade. `cloak version`
+checks immediately; background checks and reminders use a 24-hour interval.
+Set `CLOAK_NO_UPDATE_CHECK=1` to disable notices (explicit updates still work).
+For migration, a new SemVer release supersedes the older timestamp-style stable
+tags within the same major/minor series.
 
 ---
 

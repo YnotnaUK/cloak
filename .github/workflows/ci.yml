@@ -41,3 +41,10 @@ jobs:
 
       - name: Run Tests
         run: go test -v -cover ./...
+
+  release:
+    needs: [lint, test]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml

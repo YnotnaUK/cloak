@@ -3,6 +3,7 @@ package updater
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,38 +15,77 @@ import (
 )
 
 const (
-	repoURL        = "https://api.github.com/repos/ynotnauk/cloak/releases/latest"
+	repoURL        = "https://api.github.com/repos/ynotnauk/cloak/releases"
 	checkInterval  = 24 * time.Hour
 	notifyInterval = 24 * time.Hour
-	httpTimeout    = 1500 * time.Millisecond
+	checkTimeout   = 5 * time.Second
+	updateTimeout  = 30 * time.Second
 )
 
 type State struct {
-	LatestVersion string    `json:"latest_version"`
-	LastChecked   time.Time `json:"last_checked"`
-	LastNotified  time.Time `json:"last_notified"`
+	CurrentVersion string    `json:"current_version"`
+	StableVersion  string    `json:"stable_version"`
+	PreviewVersion string    `json:"preview_version"`
+	LastChecked    time.Time `json:"last_checked"`
+	LastNotified   time.Time `json:"last_notified"`
 }
 
-// CheckLatest fetches the newest release from GitHub, updates state, and returns if newer.
-func CheckLatest(currentVersion string) (string, bool) {
+// Notice checks both channels for previews, and only stable releases otherwise.
+func Notice(currentVersion string) (string, error) {
 	if isIgnored(currentVersion) {
-		return "", false
+		return "", nil
 	}
+	state, err := fetchState(currentVersion)
+	return formatNotice(currentVersion, state), err
+}
 
-	latest, err := fetchLatestVersion()
-	if err != nil || latest == "" {
-		return "", false
+func fetchState(current string) (State, error) {
+	state := State{CurrentVersion: current}
+	v, err := parseVersion(current)
+	if err != nil {
+		return state, err
 	}
-
-	// Update cached latest version
-	if stateFile, err := getStateFilePath(); err == nil {
-		state := loadState(stateFile)
-		state.LatestVersion = latest
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+	defer cancel()
+	state.StableVersion, err = fetchStable(ctx)
+	if v.preview != "" {
+		preview, previewErr := fetchPreview(ctx, v.series())
+		state.PreviewVersion = preview
+		err = errors.Join(err, previewErr)
+	}
+	if err == nil {
 		state.LastChecked = time.Now()
-		saveState(stateFile, state)
 	}
+	return state, err
+}
 
-	return latest, latest != currentVersion
+func formatNotice(current string, state State) string {
+	v, err := parseVersion(current)
+	if err != nil {
+		return ""
+	}
+	var notice strings.Builder
+	if v.preview != "" {
+		fmt.Fprintf(&notice, "\n[notice] You are running a preview version of cloak: %s\n", current)
+		latest, err := parseVersion(state.PreviewVersion)
+		if err == nil && compareVersions(latest, v) > 0 {
+			fmt.Fprintf(&notice, "[notice] A newer preview is available: %s\n[notice] To update your preview, run: cloak update --preview\n", state.PreviewVersion)
+		}
+	}
+	latest, err := parseVersion(state.StableVersion)
+	if err != nil {
+		return notice.String()
+	}
+	if compareVersions(latest, v) > 0 {
+		if v.preview == "" {
+			fmt.Fprintf(&notice, "\n[notice] A new version of cloak is available: %s (current: %s)\n[notice] To update, run: cloak update\n", state.StableVersion, current)
+		} else {
+			fmt.Fprintf(&notice, "[notice] A stable release is available: %s\n[notice] To switch to stable, run: cloak update\n", state.StableVersion)
+		}
+	} else if v.preview != "" {
+		fmt.Fprintf(&notice, "[notice] Latest stable is %s; cloak update switches to this older stable version.\n", state.StableVersion)
+	}
+	return notice.String()
 }
 
 // StartCheck runs passively in the background for regular commands.
@@ -59,34 +99,11 @@ func StartCheck(currentVersion string) func() {
 	go func() {
 		defer close(resultChan)
 
-		stateFile, err := getStateFilePath()
+		notice, err := cachedNotice(currentVersion)
 		if err != nil {
-			return
+			notice += fmt.Sprintf("\n[notice] Update check failed: %v\n", err)
 		}
-
-		state := loadState(stateFile)
-		now := time.Now()
-
-		// 1. Fetch if checked > 24 hours ago using CheckLatest
-		if now.Sub(state.LastChecked) > checkInterval {
-			if latest, _ := CheckLatest(currentVersion); latest != "" {
-				state.LatestVersion = latest
-			}
-		}
-
-		// 2. Queue notice if an update is available and notification cooldown passed
-		if state.LatestVersion != "" && state.LatestVersion != currentVersion {
-			if now.Sub(state.LastNotified) > notifyInterval {
-				state.LastNotified = now
-				saveState(stateFile, state)
-
-				resultChan <- fmt.Sprintf(
-					"\n[notice] A new version of cloak is available: %s (current: %s)\n"+
-						"[notice] To update, run: cloak update\n",
-					state.LatestVersion, currentVersion,
-				)
-			}
-		}
+		resultChan <- notice
 	}()
 
 	return func() {
@@ -101,7 +118,7 @@ func StartCheck(currentVersion string) func() {
 }
 
 func isIgnored(ver string) bool {
-	return os.Getenv("CLOAK_NO_UPDATE_CHECK") == "1" || ver == "dev" || ver == ""
+	return os.Getenv("CLOAK_NO_UPDATE_CHECK") == "1" || ver == "dev" || ver == "" || strings.Contains(ver, "-dev-")
 }
 
 func getStateFilePath() (string, error) {
@@ -112,55 +129,157 @@ func getStateFilePath() (string, error) {
 	return filepath.Join(configDir, "cloak", "update.json"), nil
 }
 
-func loadState(path string) State {
-	var s State
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &s)
-	}
-	return s
-}
-
-func saveState(path string, s State) {
-	if data, err := json.MarshalIndent(s, "", "  "); err == nil {
-		_ = os.WriteFile(path, data, 0600)
-	}
-}
-
-func fetchLatestVersion() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, repoURL, nil)
+func cachedNotice(current string) (string, error) {
+	path, err := getStateFilePath()
 	if err != nil {
 		return "", err
+	}
+	state, err := loadState(path)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	if state.CurrentVersion != current {
+		state = State{CurrentVersion: current}
+	}
+	if now.Sub(state.LastChecked) > checkInterval {
+		lastNotified := state.LastNotified
+		state, err = fetchState(current)
+		state.LastNotified = lastNotified
+	}
+	notice := ""
+	if now.Sub(state.LastNotified) > notifyInterval {
+		notice = formatNotice(current, state)
+		if notice != "" {
+			state.LastNotified = now
+		}
+	}
+	return notice, errors.Join(err, saveState(path, state))
+}
+
+func loadState(path string) (State, error) {
+	var s State
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return s, nil
+	}
+	if err != nil {
+		return s, fmt.Errorf("reading update cache: %w", err)
+	}
+	if err := json.Unmarshal(data, &s); err != nil {
+		return s, fmt.Errorf("decoding update cache: %w", err)
+	}
+	return s, nil
+}
+
+func saveState(path string, s State) error {
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding update cache: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("creating update cache directory: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing update cache: %w", err)
+	}
+	return nil
+}
+
+type release struct {
+	TagName string `json:"tag_name"`
+	Preview bool   `json:"prerelease"`
+	Draft   bool   `json:"draft"`
+}
+
+func fetchJSON(ctx context.Context, url string, target any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
 	}
 	req.Header.Set("User-Agent", "cloak-cli")
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status: %d", resp.StatusCode)
+		return fmt.Errorf("fetching releases: HTTP %d", resp.StatusCode)
 	}
 
-	var release struct {
-		TagName string `json:"tag_name"`
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return fmt.Errorf("decoding releases: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	return nil
+}
+
+func fetchStable(ctx context.Context) (string, error) {
+	var r release
+	if err := fetchJSON(ctx, repoURL+"/latest", &r); err != nil {
 		return "", err
 	}
+	if r.Preview || r.Draft {
+		return "", fmt.Errorf("latest stable endpoint returned a draft or prerelease")
+	}
+	v, err := parseVersion(r.TagName)
+	if err != nil {
+		return "", err
+	}
+	if v.preview != "" {
+		return "", fmt.Errorf("latest stable endpoint returned a preview tag")
+	}
+	return r.TagName, nil
+}
 
-	return strings.TrimSpace(release.TagName), nil
+func fetchPreview(ctx context.Context, series string) (string, error) {
+	latest := ""
+	var latestVersion version
+	for page := 1; ; page++ {
+		var releases []release
+		url := fmt.Sprintf("%s?per_page=100&page=%d", repoURL, page)
+		if err := fetchJSON(ctx, url, &releases); err != nil {
+			return "", err
+		}
+		if len(releases) == 0 {
+			break
+		}
+		for _, r := range releases {
+			if !r.Preview || r.Draft || !strings.HasPrefix(r.TagName, "v"+series+".") || !strings.Contains(r.TagName, "-preview.") {
+				continue
+			}
+			v, err := parseVersion(r.TagName)
+			if err != nil {
+				return "", err
+			}
+			if latest == "" || compareVersions(v, latestVersion) > 0 {
+				latest, latestVersion = r.TagName, v
+			}
+		}
+	}
+	if latest == "" {
+		return "", fmt.Errorf("no preview release found for %s", series)
+	}
+	return latest, nil
 }
 
 // Upgrade downloads the latest release binary and replaces the current executable.
-func Upgrade(currentVersion string) error {
+func Upgrade(currentVersion string, opts Options) error {
+	series, err := previewSeries(currentVersion, opts)
+	if err != nil {
+		return err
+	}
 	fmt.Println("Checking for latest release...")
-	latest, err := fetchLatestVersion()
+	ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
+	defer cancel()
+	var latest string
+	if opts.Preview {
+		latest, err = fetchPreview(ctx, series)
+	} else {
+		latest, err = fetchStable(ctx)
+	}
 	if err != nil {
 		return fmt.Errorf("failed fetching latest version: %w", err)
 	}
@@ -168,6 +287,21 @@ func Upgrade(currentVersion string) error {
 	if latest == currentVersion && currentVersion != "dev" {
 		fmt.Printf("cloak is already up to date (%s)\n", currentVersion)
 		return nil
+	}
+	if current, err := parseVersion(currentVersion); err == nil {
+		target, err := parseVersion(latest)
+		if err != nil {
+			return err
+		}
+		if !opts.Preview && current.preview != "" {
+			fmt.Printf("Switching from preview %s to stable %s.\n", currentVersion, latest)
+		}
+		if compareVersions(target, current) < 0 {
+			if opts.Preview {
+				return fmt.Errorf("latest preview %s is older than installed %s; refusing to downgrade", latest, currentVersion)
+			}
+			fmt.Printf("Warning: %s is older than installed %s.\n", latest, currentVersion)
+		}
 	}
 
 	ext := ""
@@ -187,7 +321,8 @@ func Upgrade(currentVersion string) error {
 	}
 
 	fmt.Printf("Downloading %s (%s)...\n", latest, binaryName)
-	resp, err := http.Get(downloadURL)
+	downloadClient := &http.Client{Timeout: 2 * time.Minute}
+	resp, err := downloadClient.Get(downloadURL)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
@@ -196,7 +331,14 @@ func Upgrade(currentVersion string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("release asset not found at %s (HTTP %d)", downloadURL, resp.StatusCode)
 	}
+	if err := replaceBinary(execPath, resp.Body); err != nil {
+		return err
+	}
+	fmt.Printf("Successfully updated cloak to %s!\n", latest)
+	return nil
+}
 
+func replaceBinary(execPath string, binary io.Reader) error {
 	// Write to temporary file next to executable for atomic rename
 	tmpFile, err := os.CreateTemp(filepath.Dir(execPath), "cloak-upgrade-*")
 	if err != nil {
@@ -207,12 +349,16 @@ func Upgrade(currentVersion string) error {
 	}
 	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+	size, err := io.Copy(tmpFile, binary)
+	if err != nil {
 		_ = tmpFile.Close()
 		return fmt.Errorf("failed saving binary: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("failed saving binary: %w", err)
+	}
+	if size == 0 {
+		return fmt.Errorf("downloaded release binary is empty")
 	}
 
 	if err := os.Chmod(tmpFile.Name(), 0755); err != nil {
@@ -227,6 +373,5 @@ func Upgrade(currentVersion string) error {
 		return fmt.Errorf("failed replacing binary: %w", err)
 	}
 
-	fmt.Printf("Successfully updated cloak to %s!\n", latest)
 	return nil
 }

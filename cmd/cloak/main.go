@@ -280,13 +280,19 @@ func main() {
 
 	case "version":
 		fmt.Printf("cloak %s (commit: %s, built at: %s)\n", Version, Commit, Date)
-		if latest, hasUpdate := updater.CheckLatest(Version); hasUpdate {
-			fmt.Printf("\n[notice] A new version of cloak is available: %s (current: %s)\n", latest, Version)
-			fmt.Println("[notice] To update, run: cloak update")
+		notice, err := updater.Notice(Version)
+		fmt.Print(notice)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[notice] Update check failed: %v\n", err)
 		}
 
 	case "update":
-		if err := updater.Upgrade(Version); err != nil {
+		opts, err := parseUpdateArgs(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(2)
+		}
+		if err := updater.Upgrade(Version, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -298,6 +304,22 @@ func main() {
 }
 
 const recipientUsage = "Usage: cloak recipient <list|add|remove> [args]"
+
+func parseUpdateArgs(args []string) (updater.Options, error) {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	var opts updater.Options
+	fs.BoolVar(&opts.Preview, "preview", false, "Update the current preview series, or specify major.minor")
+	if err := fs.Parse(args); err != nil {
+		return opts, err
+	}
+	if fs.NArg() > 1 || (fs.NArg() > 0 && !opts.Preview) {
+		return opts, fmt.Errorf("usage: cloak update [--preview [major.minor]]")
+	}
+	if fs.NArg() == 1 {
+		opts.Series = fs.Arg(0)
+	}
+	return opts, nil
+}
 
 // parseInterspersed parses flags that may appear before or after positional arguments.
 func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
@@ -375,5 +397,5 @@ func printUsage() {
 	fmt.Println("  decrypt   <file> -e <path> [-n]         Print a single decrypted value")
 	fmt.Println("  decrypt   -i [file ...]                 Decrypt files in-place (all matching files if none given)")
 	fmt.Println("  version                                 Show cloak version information")
-	fmt.Println("  update                                  Self-update to the latest release")
+	fmt.Println("  update    [--preview [major.minor]]     Update to stable, or the latest preview in a series")
 }
