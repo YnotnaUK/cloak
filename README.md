@@ -43,6 +43,16 @@ Cloak encrypts sensitive values inside structured files (.env, .json, .yaml) or 
 curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/main/install.sh | bash
 ```
 
+To install the newest preview for a release series, use `--preview <major.minor>`.
+Preview selection additionally requires `jq` and checks all release pages:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/release/0.2/install.sh | bash -s -- --preview 0.2
+```
+
+The script fails if no matching preview exists or the binary download fails.
+Both modes install to `/usr/local/bin/cloak`, replacing any existing installation.
+
 ### From Source
 ```bash
 git clone https://github.com/ynotnauk/cloak.git
@@ -69,9 +79,9 @@ CI runs lint and tests once before publishing releases from qualifying pushes:
 - Retention keeps the newest 20 stable releases and, separately, the newest
   20 previews per release branch.
 
-The install script and `cloak update` use the latest stable release. To try a
-preview, download the binary for your platform from the
-[releases page](https://github.com/ynotnauk/cloak/releases) and install it manually.
+The install script defaults to the latest stable release; `--preview <major.minor>`
+selects the newest published preview for that series. Preview binaries are also
+available on the [releases page](https://github.com/ynotnauk/cloak/releases).
 Running `cloak update` from a preview installs the latest stable release.
 
 ---
