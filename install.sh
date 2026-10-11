@@ -57,9 +57,13 @@ else
         [
           .[] | select(.draft == false and .prerelease == true)
           | select(.tag_name | startswith("v" + $series + "."))
-          | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-preview\\.[0-9]{14}$"))
+          | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.(0|[1-9][0-9]*)-preview\\.[0-9]{14}$"))
         ] + (if $latest == null then [] else [$latest] end)
-        | sort_by(.published_at, .tag_name) | last
+        | sort_by(
+            .tag_name
+            | capture("^v[0-9]+\\.[0-9]+\\.(?<patch>[0-9]+)-preview\\.(?<timestamp>[0-9]{14})$")
+            | [(.patch | length), .patch, .timestamp]
+          ) | last
       ')
     PAGE=$((PAGE + 1))
   done

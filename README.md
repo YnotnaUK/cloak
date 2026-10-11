@@ -80,7 +80,7 @@ CI runs lint and tests once before publishing releases from qualifying pushes:
   20 previews per release branch.
 
 The install script defaults to the latest stable release; `--preview <major.minor>`
-selects the newest published preview for that series. Preview binaries are also
+selects the highest-version preview for that series. Preview binaries are also
 available on the [releases page](https://github.com/ynotnauk/cloak/releases).
 ### Updating
 
