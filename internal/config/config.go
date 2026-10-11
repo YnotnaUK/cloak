@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ynotnauk/cloak/internal/formats"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,6 +21,7 @@ type Rule struct {
 	PathRegex     string   `yaml:"path_regex"`
 	Type          string   `yaml:"type"`
 	EncryptedKeys []string `yaml:"encrypted_keys,omitempty"`
+	pathPattern   *regexp.Regexp
 }
 
 const (
@@ -84,7 +86,7 @@ func validatePublicKey(key string) error {
 	return nil
 }
 
-// Validate checks recipient names, kinds, keys and uniqueness.
+// Validate checks recipients and rule types, and compiles rule patterns.
 func (c *Config) Validate() error {
 	if len(c.Recipients) == 0 {
 		return errors.New("at least one recipient is required")
@@ -112,6 +114,18 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("recipient %q: duplicate public key", r.Name)
 		}
 		names[r.Name], keys[r.Key] = true, true
+	}
+	for i := range c.Rules {
+		rule := &c.Rules[i]
+		rule.pathPattern = nil
+		if _, err := formats.Get(rule.Type); err != nil {
+			return fmt.Errorf("rule %d (%q): %w", i+1, rule.PathRegex, err)
+		}
+		pattern, err := regexp.Compile(rule.PathRegex)
+		if err != nil {
+			return fmt.Errorf("rule %d: invalid path_regex %q: %w", i+1, rule.PathRegex, err)
+		}
+		rule.pathPattern = pattern
 	}
 	return nil
 }
@@ -198,18 +212,24 @@ func (c *Config) IsExcluded(path string) bool {
 	return false
 }
 
-func (c *Config) FindRule(path string) *Rule {
-	for _, rule := range c.Rules {
-		matched, _ := regexp.MatchString(rule.PathRegex, path)
-		if matched {
-			return &rule
+func (c *Config) FindRule(path string) (*Rule, error) {
+	for i := range c.Rules {
+		rule := &c.Rules[i]
+		if rule.pathPattern == nil || rule.pathPattern.String() != rule.PathRegex {
+			return nil, fmt.Errorf("rule %d: call Validate after changing path_regex %q", i+1, rule.PathRegex)
+		}
+		if rule.pathPattern.MatchString(path) {
+			return rule, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // Save writes the updated config back to .cloak.yaml
 func (c *Config) Save() (err error) {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("invalid %s: %w", ConfigFileName, err)
+	}
 	f, err := os.OpenFile(ConfigFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err

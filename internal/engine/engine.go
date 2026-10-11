@@ -66,7 +66,10 @@ func Process(decrypt bool, paths []string) error {
 			return nil
 		}
 
-		rule := cfg.FindRule(path)
+		rule, err := cfg.FindRule(path)
+		if err != nil {
+			return err
+		}
 		if rule == nil {
 			return nil
 		}
@@ -82,7 +85,7 @@ func Process(decrypt bool, paths []string) error {
 func processFile(cfg *config.Config, path string, perm fs.FileMode, rule *config.Rule, decrypt bool, privKey string) error {
 	formatter, err := formats.Get(rule.Type)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed processing %s: %w", path, err)
 	}
 
 	content, err := os.ReadFile(path)
@@ -132,7 +135,10 @@ func resolveFile(cfg *config.Config, path string) (*config.Rule, error) {
 	if cfg.IsExcluded(clean) {
 		return nil, fmt.Errorf("%s is excluded in %s", path, config.ConfigFileName)
 	}
-	rule := cfg.FindRule(clean)
+	rule, err := cfg.FindRule(clean)
+	if err != nil {
+		return nil, err
+	}
 	if rule == nil {
 		return nil, fmt.Errorf("%s does not match any rule in %s", path, config.ConfigFileName)
 	}
@@ -213,9 +219,17 @@ func Rekey() error {
 			return nil
 		}
 
-		rule := cfg.FindRule(path)
+		rule, err := cfg.FindRule(path)
+		if err != nil {
+			return err
+		}
 		if rule == nil {
 			return nil
+		}
+
+		formatter, err := formats.Get(rule.Type)
+		if err != nil {
+			return fmt.Errorf("failed rekeying %s: %w", path, err)
 		}
 
 		content, err := os.ReadFile(path)
@@ -225,11 +239,6 @@ func Rekey() error {
 
 		// Skip files that are not encrypted
 		if !strings.Contains(string(content), crypto.Prefix) {
-			return nil
-		}
-
-		formatter, err := formats.Get(rule.Type)
-		if err != nil {
 			return nil
 		}
 
