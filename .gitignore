@@ -1,6 +1,6 @@
 # Binaries
 bin/
-cloak
+/cloak
 
 # Coverage and test artifacts
 coverage/

@@ -82,7 +82,24 @@ CI runs lint and tests once before publishing releases from qualifying pushes:
 The install script defaults to the latest stable release; `--preview <major.minor>`
 selects the newest published preview for that series. Preview binaries are also
 available on the [releases page](https://github.com/ynotnauk/cloak/releases).
-Running `cloak update` from a preview installs the latest stable release.
+### Updating
+
+- `cloak update` installs the latest stable release. From a preview, it explicitly
+  reports the channel switch and warns if the stable version is older.
+- `cloak update --preview` updates the installed preview within its major/minor
+  series, including newer patch versions.
+- `cloak update --preview 0.2` selects a preview series explicitly, including
+  when currently running stable. No matching preview is an error, not a fallback
+  to stable. Preview updates refuse to install an older version.
+
+Stable installations are notified only when a newer stable version is available.
+Previews receive a periodic preview reminder, notice of newer previews in the same
+series, and notice when a matching or newer stable release is available. An older
+stable release is labelled as a channel switch, not an upgrade. `cloak version`
+checks immediately; background checks and reminders use a 24-hour interval.
+Set `CLOAK_NO_UPDATE_CHECK=1` to disable notices (explicit updates still work).
+For migration, a new SemVer release supersedes the older timestamp-style stable
+tags within the same major/minor series.
 
 ---
 
