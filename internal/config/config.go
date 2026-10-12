@@ -146,6 +146,7 @@ func Init(recipients []Recipient, force bool) error {
 		Recipients: recipients,
 		Exclude: []string{
 			".git",
+			".github",
 			"node_modules",
 			"bin",
 			"coverage",

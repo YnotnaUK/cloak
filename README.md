@@ -146,6 +146,9 @@ Encrypts all matching files in-place according to .cloak.yaml rules, or only the
 cloak encrypt
 cloak encrypt config/app.yaml
 ```
+When processing multiple files, Cloak continues after individual file errors and
+reports all failures at the end. Successfully processed files are still updated;
+the operation is not transactional across files.
 
 Encrypt/decrypt, edit, rekey, key generation and config updates write to a
 temporary file in the destination directory, sync its contents, then atomically

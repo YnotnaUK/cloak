@@ -98,3 +98,62 @@ func TestProcessFileRejectsUnknownFormat(t *testing.T) {
 		t.Fatalf("expected contextual format error before reading file, got %v", err)
 	}
 }
+
+func TestProcessContinuesAfterFileErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		paths []string
+	}{
+		{name: "explicit", paths: []string{"bad.json", "also-bad.json", "good.yaml"}},
+		{name: "walk"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setup(t, "app.yaml", "password: setup\n")
+			bad := []byte(`{"password":`)
+			for _, path := range []string{"bad.json", "also-bad.json"} {
+				if err := os.WriteFile(path, bad, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			good := []byte("password: still-processed\n")
+			if err := os.WriteFile("good.yaml", good, 0600); err != nil {
+				t.Fatal(err)
+			}
+			githubWorkflow := []byte("token: workflow-token\n")
+			if err := os.MkdirAll(".github/workflows", 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(".github/workflows/ci.yml", githubWorkflow, 0600); err != nil {
+				t.Fatal(err)
+			}
+
+			err := Process(false, tc.paths)
+			if err == nil || !strings.Contains(err.Error(), "bad.json") || !strings.Contains(err.Error(), "also-bad.json") {
+				t.Fatalf("Process error = %v, want errors mentioning both invalid files", err)
+			}
+			for _, path := range []string{"bad.json", "also-bad.json"} {
+				afterBad, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(afterBad, bad) {
+					t.Fatalf("invalid file %s was modified", path)
+				}
+			}
+			afterGood, err := os.ReadFile("good.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Equal(afterGood, good) || !bytes.Contains(afterGood, []byte("CLOAK:v1:")) {
+				t.Fatalf("valid file was not processed after the error: %s", afterGood)
+			}
+			afterWorkflow, err := os.ReadFile(".github/workflows/ci.yml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(afterWorkflow, githubWorkflow) {
+				t.Fatal(".github workflow was modified")
+			}
+		})
+	}
+}
