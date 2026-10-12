@@ -201,6 +201,11 @@ cloak recipient remove alice
 cloak rekey
 ```
 
+Recipient changes first rekey every encrypted file, then save `.cloak.yaml`.
+If a file cannot be decrypted or re-encrypted, no files or recipient settings
+are changed. Replacements are written atomically, with rollback attempted if a
+later file write or config save fails.
+
 ---
 
 ## CI/CD and Break-Glass Keys

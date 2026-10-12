@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -191,19 +192,42 @@ func ExtractValue(path, keyPath string) ([]byte, error) {
 	})
 }
 
-// In internal/engine/engine.go:
 func Rekey() error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
+	return rekey(cfg, false)
+}
 
+// RekeyWithConfig rekeys all encrypted files for cfg and saves cfg only after
+// every file has been re-encrypted successfully.
+func RekeyWithConfig(cfg *config.Config) error {
+	if cfg == nil {
+		return errors.New("config is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid %s: %w", config.ConfigFileName, err)
+	}
+	return rekey(cfg, true)
+}
+
+type rekeyedFile struct {
+	path      string
+	writePath string
+	original  []byte
+	rekeyed   []byte
+	mode      fs.FileMode
+}
+
+func rekey(cfg *config.Config, saveConfig bool) error {
 	privKey, err := cryptoPrivateKeyLoader()
 	if err != nil {
 		return err
 	}
 
-	return filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+	var files []rekeyedFile
+	err = filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -262,12 +286,89 @@ func Rekey() error {
 		if err != nil {
 			return err
 		}
-
-		if err := os.WriteFile(path, rekeyed, info.Mode().Perm()); err != nil {
-			return fmt.Errorf("failed writing %s: %w", path, err)
+		writePath := path
+		if info.Mode()&os.ModeSymlink != 0 {
+			writePath, err = filepath.EvalSymlinks(path)
+			if err != nil {
+				return fmt.Errorf("failed resolving %s for rekey: %w", path, err)
+			}
+			info, err = os.Stat(writePath)
+			if err != nil {
+				return fmt.Errorf("failed reading file info for %s: %w", path, err)
+			}
 		}
-
-		fmt.Printf("Rekeyed: %s\n", path)
+		files = append(files, rekeyedFile{
+			path:      path,
+			writePath: writePath,
+			original:  content,
+			rekeyed:   rekeyed,
+			mode:      info.Mode().Perm(),
+		})
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	committed := 0
+	for _, file := range files {
+		if err := atomicWriteFile(file.writePath, file.rekeyed, file.mode); err != nil {
+			writeErr := fmt.Errorf("failed writing %s: %w", file.path, err)
+			return errors.Join(writeErr, rollbackRekeyedFiles(files, committed))
+		}
+		committed++
+	}
+
+	if saveConfig {
+		if err := cfg.Save(); err != nil {
+			saveErr := fmt.Errorf("failed saving %s after rekey: %w", config.ConfigFileName, err)
+			return errors.Join(saveErr, rollbackRekeyedFiles(files, committed))
+		}
+	}
+
+	for _, file := range files {
+		fmt.Printf("Rekeyed: %s\n", file.path)
+	}
+	return nil
+}
+
+func rollbackRekeyedFiles(files []rekeyedFile, committed int) error {
+	var rollbackErr error
+	for i := committed - 1; i >= 0; i-- {
+		file := files[i]
+		if err := atomicWriteFile(file.writePath, file.original, file.mode); err != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("failed restoring %s: %w", file.path, err))
+		}
+	}
+	return rollbackErr
+}
+
+func atomicWriteFile(path string, data []byte, mode fs.FileMode) (err error) {
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := file.Name()
+	defer func() {
+		if cleanupErr := os.Remove(tmpPath); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("failed removing temporary file %s: %w", tmpPath, cleanupErr))
+		}
+	}()
+
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
