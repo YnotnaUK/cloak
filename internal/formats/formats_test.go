@@ -165,8 +165,8 @@ func TestJsonNonStringValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	input := `{"a":null,"b":["x","y"],"c":12345678901234567890,"d":true,"e":1.50,"f":"\u0000json:literal","g":"text","h":{"k":1}}`
-	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	input := `{"a":null,"b":["x","y"],"c":12345678901234567890,"d":true,"e":1.50,"f":"\u0000json:literal","g":"text","h":{"k":1},"i":[{"nested":[1,{"ok":true}]}]}`
+	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}
 
 	enc, err := f.Encrypt([]byte(input), keys, mockEncrypt)
 	if err != nil {
@@ -197,5 +197,45 @@ func TestJsonNonStringValues(t *testing.T) {
 	}
 	if string(out) != `["x","y"]` {
 		t.Fatalf("unexpected extract: %s", out)
+	}
+}
+
+func TestJSONFormatterPreservesStructureAroundEncryptedValues(t *testing.T) {
+	f, err := formats.Get("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("{\n  \"z\": \"<tag>&\",\n  \"pass\\u0077ord\" : \"<secret &>\",\n  \"a\": 12345678901234567890\n}\n")
+	wantEncrypted := []byte("{\n  \"z\": \"<tag>&\",\n  \"pass\\u0077ord\" : \"" + crypto.Prefix + "mock:<secret &>\",\n  \"a\": 12345678901234567890\n}\n")
+
+	encrypted, err := f.Encrypt(input, []string{"password"}, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encrypted) != string(wantEncrypted) {
+		t.Fatalf("encryption changed JSON structure:\n got %s\nwant %s", encrypted, wantEncrypted)
+	}
+
+	decrypted, err := f.Decrypt(encrypted, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decrypted) != string(input) {
+		t.Fatalf("decryption changed JSON structure:\n got %s\nwant %s", decrypted, input)
+	}
+}
+
+func TestJSONDecryptLeavesArrayElementStringsUntouched(t *testing.T) {
+	input := []byte(`["` + crypto.Prefix + `mock:plain"]`)
+	f, err := formats.Get("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err := f.Decrypt(input, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decrypted) != string(input) {
+		t.Fatalf("array element was unexpectedly decrypted: %s", decrypted)
 	}
 }
