@@ -9,6 +9,7 @@ import (
 
 	"github.com/ynotnauk/cloak/internal/crypto"
 	"github.com/ynotnauk/cloak/internal/formats"
+	"gopkg.in/yaml.v3"
 )
 
 // Mock crypto functions using current crypto.Prefix
@@ -130,6 +131,82 @@ func TestYamlMultiDocument(t *testing.T) {
 	}
 	if string(dec) != string(input) {
 		t.Fatalf("round trip mismatch:\n%s", dec)
+	}
+}
+
+func TestYAMLFormatterPreservesScalarTypes(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("password: 12345\ntoken: true\nsecret: null\nrate: 1.25\napp: hello\nquoted: 'value' # preserved comment\n")
+	keys := []string{"password", "token", "secret", "rate", "app", "quoted"}
+
+	encrypted, err := f.Encrypt(input, keys, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err := f.Decrypt(encrypted, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var document yaml.Node
+	if err := yaml.Unmarshal(decrypted, &document); err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]*yaml.Node)
+	for i := 0; i < len(document.Content[0].Content); i += 2 {
+		got[document.Content[0].Content[i].Value] = document.Content[0].Content[i+1]
+	}
+	for key, want := range map[string]struct {
+		tag   string
+		value string
+		style yaml.Style
+	}{
+		"password": {tag: "!!int", value: "12345"},
+		"token":    {tag: "!!bool", value: "true"},
+		"secret":   {tag: "!!null", value: "null"},
+		"rate":     {tag: "!!float", value: "1.25"},
+		"app":      {tag: "!!str", value: "hello"},
+		"quoted":   {tag: "!!str", value: "value", style: yaml.SingleQuotedStyle},
+	} {
+		node := got[key]
+		if node == nil {
+			t.Errorf("%s is missing", key)
+			continue
+		}
+		if node.Tag != want.tag || node.Value != want.value || node.Style != want.style {
+			t.Errorf("%s = tag %q, value %q, style %d; want tag %q, value %q, style %d", key, node.Tag, node.Value, node.Style, want.tag, want.value, want.style)
+		}
+	}
+
+	extracted, err := f.Extract(encrypted, "password", mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(extracted) != "12345" {
+		t.Fatalf("extracted typed scalar = %q, want %q", extracted, "12345")
+	}
+}
+
+func TestYAMLDecryptSupportsLegacyCiphertext(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("password: " + crypto.Prefix + "mock:12345\n")
+	decrypted, err := f.Decrypt(input, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(decrypted, &document); err != nil {
+		t.Fatal(err)
+	}
+	value := document.Content[0].Content[1]
+	if value.Tag != "!!str" || value.Value != "12345" {
+		t.Fatalf("legacy scalar = tag %q, value %q; want string %q", value.Tag, value.Value, "12345")
 	}
 }
 

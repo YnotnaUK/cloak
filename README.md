@@ -23,7 +23,9 @@ The envelope version is independent of the CLI release version.
 - Envelope Encryption: Uses a random 32-byte Data Encryption Key (DEK) wrapped per recipient.
 - Declarative Configuration: Define rules and keys once in .cloak.yaml.
 - Targeted Key Encryption: Encrypt only specific keys (password, token, etc.) while keeping the rest readable.
-- AST-Preserving YAML: Retains formatting, scalar types, and comments.
+- AST-Preserving YAML: Retains formatting, scalar types, and comments. Newly
+  encrypted scalars preserve their types on decryption; older ciphertexts
+  decrypt as strings.
 - Idempotent: Safe to run repeatedly without double-encrypting.
 - Multi-Recipient & Rekeying: Add or remove team members with automatic DEK rotation.
 
