@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
@@ -226,43 +227,101 @@ func (c *Config) FindRule(path string) (*Rule, error) {
 }
 
 // Save writes the updated config back to .cloak.yaml
-func (c *Config) Save() (err error) {
+func (c *Config) Save() error {
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("invalid %s: %w", ConfigFileName, err)
 	}
-	f, err := os.OpenFile(ConfigFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+
+	var data bytes.Buffer
+	encoder := yaml.NewEncoder(&data)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(c); err != nil {
+		return err
+	}
+
+	writePath := ConfigFileName
+	mode := os.FileMode(0644)
+	if info, err := os.Lstat(ConfigFileName); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			writePath, err = filepath.EvalSymlinks(ConfigFileName)
+			if err != nil {
+				return err
+			}
+			info, err = os.Stat(writePath)
+			if err != nil {
+				return err
+			}
+		}
+		mode = info.Mode().Perm()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	f, err := os.CreateTemp(filepath.Dir(writePath), "."+filepath.Base(writePath)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-	}()
-
-	encoder := yaml.NewEncoder(f)
-	encoder.SetIndent(2)
-	return encoder.Encode(c)
+	tmpPath := f.Name()
+	defer os.Remove(tmpPath)
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data.Bytes()); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, writePath); err != nil {
+		return err
+	}
+	return nil
 }
 
-// AddRecipient validates and adds a named recipient, then saves the config.
-func (c *Config) AddRecipient(name, key, kind string) error {
+func (c *Config) clone() *Config {
+	clone := *c
+	clone.Recipients = append([]Recipient(nil), c.Recipients...)
+	clone.Exclude = append([]string(nil), c.Exclude...)
+	clone.Rules = append([]Rule(nil), c.Rules...)
+	for i := range clone.Rules {
+		clone.Rules[i].EncryptedKeys = append([]string(nil), c.Rules[i].EncryptedKeys...)
+	}
+	return &clone
+}
+
+// WithAddedRecipient returns a validated config with a recipient added.
+func (c *Config) WithAddedRecipient(name, key, kind string) (*Config, error) {
 	r := Recipient{Name: strings.TrimSpace(name), Key: strings.TrimSpace(key), Kind: kind}
 	if r.Kind == "" {
 		r.Kind = KindUser
 	}
 
-	candidate := Config{Recipients: append(append([]Recipient{}, c.Recipients...), r)}
+	candidate := c.clone()
+	candidate.Recipients = append(candidate.Recipients, r)
 	if err := candidate.Validate(); err != nil {
+		return nil, err
+	}
+	return candidate, nil
+}
+
+// AddRecipient validates and adds a named recipient, then saves the config.
+func (c *Config) AddRecipient(name, key, kind string) error {
+	candidate, err := c.WithAddedRecipient(name, key, kind)
+	if err != nil {
 		return err
 	}
-
 	c.Recipients = candidate.Recipients
 	return c.Save()
 }
 
-// RemoveRecipient removes a recipient by name or public key.
-func (c *Config) RemoveRecipient(nameOrKey string) (*Recipient, error) {
+// WithoutRecipient returns a validated config with a recipient removed.
+func (c *Config) WithoutRecipient(nameOrKey string) (*Config, *Recipient, error) {
 	nameOrKey = strings.TrimSpace(nameOrKey)
 	var removed *Recipient
 	var updated []Recipient
@@ -277,12 +336,26 @@ func (c *Config) RemoveRecipient(nameOrKey string) (*Recipient, error) {
 	}
 
 	if removed == nil {
-		return nil, fmt.Errorf("recipient %q not found in %s", nameOrKey, ConfigFileName)
+		return nil, nil, fmt.Errorf("recipient %q not found in %s", nameOrKey, ConfigFileName)
 	}
 	if len(updated) == 0 {
-		return nil, fmt.Errorf("cannot remove last recipient; at least one recipient is required")
+		return nil, nil, fmt.Errorf("cannot remove last recipient; at least one recipient is required")
 	}
 
-	c.Recipients = updated
+	candidate := c.clone()
+	candidate.Recipients = updated
+	if err := candidate.Validate(); err != nil {
+		return nil, nil, err
+	}
+	return candidate, removed, nil
+}
+
+// RemoveRecipient removes a recipient by name or public key, then saves the config.
+func (c *Config) RemoveRecipient(nameOrKey string) (*Recipient, error) {
+	candidate, removed, err := c.WithoutRecipient(nameOrKey)
+	if err != nil {
+		return nil, err
+	}
+	c.Recipients = candidate.Recipients
 	return removed, c.Save()
 }

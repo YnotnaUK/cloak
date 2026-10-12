@@ -176,16 +176,17 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := cfg.AddRecipient(*name, keyToAdd, *kind); err != nil {
+			updated, err := cfg.WithAddedRecipient(*name, keyToAdd, *kind)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Added recipient: %s (%s)\n", *name, keyToAdd)
 			fmt.Println("Rotating DEK and re-keying project files...")
-			if err := engine.Rekey(); err != nil {
+			if err := engine.RekeyWithConfig(updated); err != nil {
 				fmt.Fprintf(os.Stderr, "Error re-keying: %v\n", err)
 				os.Exit(1)
 			}
+			fmt.Printf("Added recipient: %s (%s)\n", *name, keyToAdd)
 
 		case "remove":
 			if len(os.Args) < 4 {
@@ -199,17 +200,17 @@ func main() {
 				os.Exit(1)
 			}
 
-			removed, err := cfg.RemoveRecipient(os.Args[3])
+			updated, removed, err := cfg.WithoutRecipient(os.Args[3])
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Removed recipient: %s (%s)\n", removed.Name, removed.Key)
 			fmt.Println("Rotating DEK and re-keying project files...")
-			if err := engine.Rekey(); err != nil {
+			if err := engine.RekeyWithConfig(updated); err != nil {
 				fmt.Fprintf(os.Stderr, "Error re-keying: %v\n", err)
 				os.Exit(1)
 			}
+			fmt.Printf("Removed recipient: %s (%s)\n", removed.Name, removed.Key)
 
 		default:
 			fmt.Println(recipientUsage)
