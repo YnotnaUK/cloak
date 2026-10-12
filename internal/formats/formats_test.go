@@ -1,6 +1,7 @@
 package formats_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -137,19 +138,26 @@ func TestJsonArrays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	encryptFn := func(plain []byte) (string, error) {
+		return crypto.Prefix + "mock:" + base64.RawStdEncoding.EncodeToString(plain), nil
+	}
+	decryptFn := func(ciphertext string) ([]byte, error) {
+		payload := strings.TrimPrefix(ciphertext, crypto.Prefix+"mock:")
+		return base64.RawStdEncoding.DecodeString(payload)
+	}
 
 	for _, input := range []string{
 		`{"servers":[{"password":"plain1"},[{"password":"plain2"}]]}`,
 		`[{"password":"plain1"},{"nested":{"password":"plain2"}}]`,
 	} {
-		enc, err := f.Encrypt([]byte(input), []string{"password"}, mockEncrypt)
+		enc, err := f.Encrypt([]byte(input), []string{"password"}, encryptFn)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(enc), `"plain`) {
 			t.Fatalf("plaintext left in output:\n%s", enc)
 		}
-		dec, err := f.Decrypt(enc, mockDecrypt)
+		dec, err := f.Decrypt(enc, decryptFn)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,8 +173,8 @@ func TestJsonNonStringValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	input := `{"a":null,"b":["x","y"],"c":12345678901234567890,"d":true,"e":1.50,"f":"\u0000json:literal","g":"text","h":{"k":1}}`
-	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	input := `{"a":null,"b":["x","y"],"c":12345678901234567890,"d":true,"e":1.50,"f":"\u0000json:literal","g":"text","h":{"k":1},"i":[{"nested":[1,{"ok":true}]}]}`
+	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}
 
 	enc, err := f.Encrypt([]byte(input), keys, mockEncrypt)
 	if err != nil {
@@ -197,5 +205,91 @@ func TestJsonNonStringValues(t *testing.T) {
 	}
 	if string(out) != `["x","y"]` {
 		t.Fatalf("unexpected extract: %s", out)
+	}
+}
+
+func TestJSONFormatterPreservesStructureAroundEncryptedValues(t *testing.T) {
+	f, err := formats.Get("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("{\n  \"z\": \"<tag>&\",\n  \"pass\\u0077ord\" : \"<secret &>\",\n  \"a\": 12345678901234567890\n}\n")
+	wantEncrypted := []byte(`{
+  "z": "<tag>&",
+  "pass\u0077ord" : "CLOAK:v1:mock:\u0000json:\"<secret &>\"",
+  "a": 12345678901234567890
+}
+`)
+
+	encrypted, err := f.Encrypt(input, []string{"password"}, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encrypted) != string(wantEncrypted) {
+		t.Fatalf("encryption changed JSON structure:\n got %s\nwant %s", encrypted, wantEncrypted)
+	}
+
+	decrypted, err := f.Decrypt(encrypted, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decrypted) != string(input) {
+		t.Fatalf("decryption changed JSON structure:\n got %s\nwant %s", decrypted, input)
+	}
+}
+
+func TestJSONFormatterPreservesEscapedStringTokens(t *testing.T) {
+	f, err := formats.Get("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(`{"password":"\u0073ecret","token":"a\/b","secret":"\u00e9"}`)
+
+	encrypted, err := f.Encrypt(input, []string{"password", "token", "secret"}, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err := f.Decrypt(encrypted, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decrypted) != string(input) {
+		t.Fatalf("JSON string token spelling changed:\n got %s\nwant %s", decrypted, input)
+	}
+}
+
+func TestJSONDecryptSupportsLegacyStringCiphertext(t *testing.T) {
+	f, err := formats.Get("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyCiphertext, err := mockEncrypt([]byte("legacy secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(`{"password":"` + legacyCiphertext + `"}`)
+	want := []byte(`{"password":"legacy secret"}`)
+
+	decrypted, err := f.Decrypt(input, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decrypted) != string(want) {
+		t.Fatalf("legacy ciphertext decryption = %s, want %s", decrypted, want)
+	}
+}
+
+func TestJSONDecryptLeavesArrayElementStringsUntouched(t *testing.T) {
+	input := []byte(`["` + crypto.Prefix + `mock:plain"]`)
+	f, err := formats.Get("json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err := f.Decrypt(input, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decrypted) != string(input) {
+		t.Fatalf("array element was unexpectedly decrypted: %s", decrypted)
 	}
 }

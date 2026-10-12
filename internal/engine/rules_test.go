@@ -140,6 +140,7 @@ func TestProcessContinuesAfterFileErrors(t *testing.T) {
 					t.Fatalf("invalid file %s was modified", path)
 				}
 			}
+
 			afterGood, err := os.ReadFile("good.yaml")
 			if err != nil {
 				t.Fatal(err)
@@ -155,5 +156,38 @@ func TestProcessContinuesAfterFileErrors(t *testing.T) {
 				t.Fatal(".github workflow was modified")
 			}
 		})
+	}
+}
+
+func TestProcessSkipsWriteWhenContentIsUnchanged(t *testing.T) {
+	setup(t, "app.yaml", "password: setup\n")
+	content := []byte("{\n  \"password\": \"CLOAK:v1:already-encrypted\",\n  \"html\": \"<tag>&\"\n}\n")
+	if err := os.WriteFile("app.json", content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link("app.json", "original.json"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Process(false, []string{"app.json"}); err != nil {
+		t.Fatal(err)
+	}
+	appInfo, err := os.Stat("app.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat("original.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(appInfo, originalInfo) {
+		t.Fatal("unchanged file was replaced")
+	}
+	after, err := os.ReadFile("app.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, content) {
+		t.Fatalf("unchanged file content changed:\n%s", after)
 	}
 }

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -121,6 +122,10 @@ func processFile(cfg *config.Config, path string, perm fs.FileMode, rule *config
 	}
 	if err != nil {
 		return fmt.Errorf("failed processing %s: %w", path, err)
+	}
+
+	if bytes.Equal(content, processed) {
+		return nil
 	}
 
 	if err := fileio.WriteFile(path, processed, perm); err != nil {
