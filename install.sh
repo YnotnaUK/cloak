@@ -83,12 +83,48 @@ BINARY_NAME="cloak-${OS}-${ARCH}"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${BINARY_NAME}"
 
 # 4. Download Binary
-TMP_FILE=$(mktemp)
-trap 'rm -f -- "$TMP_FILE"' EXIT
+TMP_DIR=$(mktemp -d)
+TMP_FILE="${TMP_DIR}/${BINARY_NAME}"
+CHECKSUM_FILE="${TMP_DIR}/SHA256SUMS"
+trap 'rm -f -- "$TMP_FILE" "$CHECKSUM_FILE"; rmdir -- "$TMP_DIR"' EXIT
+if command -v sha256sum >/dev/null 2>&1; then
+  CHECKSUM_TOOL=sha256sum
+elif command -v shasum >/dev/null 2>&1; then
+  CHECKSUM_TOOL=shasum
+else
+  echo "Error: Installation requires sha256sum or shasum for checksum verification." >&2
+  exit 1
+fi
 echo "Downloading cloak ${LATEST_TAG} for ${OS}/${ARCH}..."
+curl -fsSL "https://github.com/${REPO}/releases/download/${LATEST_TAG}/SHA256SUMS" -o "$CHECKSUM_FILE"
+EXPECTED_CHECKSUM=$(awk -v binary="$BINARY_NAME" '
+  NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ { invalid = 1; next }
+  {
+    name = $2
+    sub(/^\*/, "", name)
+    if (name == binary) { count++; digest = tolower($1) }
+  }
+  END {
+    if (invalid || count != 1) exit 1
+    print digest
+  }
+' "$CHECKSUM_FILE") || {
+  echo "Error: SHA256SUMS must contain exactly one valid checksum for ${BINARY_NAME}." >&2
+  exit 1
+}
 curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE"
 if [[ ! -s "$TMP_FILE" ]]; then
   echo "Error: Downloaded release binary is empty." >&2
+  exit 1
+fi
+if [[ "$CHECKSUM_TOOL" == sha256sum ]]; then
+  ACTUAL_CHECKSUM=$(sha256sum "$TMP_FILE")
+else
+  ACTUAL_CHECKSUM=$(shasum -a 256 "$TMP_FILE")
+fi
+ACTUAL_CHECKSUM="${ACTUAL_CHECKSUM%% *}"
+if [[ "$ACTUAL_CHECKSUM" != "$EXPECTED_CHECKSUM" ]]; then
+  echo "Error: SHA-256 checksum mismatch for ${BINARY_NAME}; installation aborted." >&2
   exit 1
 fi
 chmod +x "$TMP_FILE"

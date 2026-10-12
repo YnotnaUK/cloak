@@ -100,6 +100,14 @@ jobs:
           # Windows
           GOOS=windows GOARCH=amd64 go build -ldflags "$LDFLAGS" -o dist/cloak-windows-amd64.exe ./cmd/cloak
 
+      - name: Generate Release Checksums
+        if: steps.prepare.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum cloak-* > SHA256SUMS
+
       - name: Create Release
         if: steps.prepare.outputs.publish == 'true'
         env:
