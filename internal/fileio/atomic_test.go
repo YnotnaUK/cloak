@@ -4,10 +4,56 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestAtomicWritesHonourUmask(t *testing.T) {
+	if os.Getenv("CLOAK_TEST_RESTRICTIVE_UMASK") != "1" {
+		bash, err := exec.LookPath("bash")
+		if err != nil {
+			t.Skip("umask regression test requires bash")
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(bash, "-c", `umask 077; exec "$@"`, "umask-test",
+			executable, "-test.run=^TestAtomicWritesHonourUmask$", "-test.v")
+		cmd.Env = append(os.Environ(), "CLOAK_TEST_RESTRICTIVE_UMASK=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("restricted umask test failed: %v\n%s", err, out)
+		}
+		return
+	}
+
+	dir := t.TempDir()
+	for _, exclusive := range []bool{false, true} {
+		name := "write"
+		if exclusive {
+			name = "create"
+		}
+		path := filepath.Join(dir, name)
+		if err := writeFile(path, strings.NewReader("new"), 0644, exclusive); err != nil {
+			t.Fatal(err)
+		}
+		checkFile(t, path, "new", 0600)
+	}
+	path := filepath.Join(dir, "existing")
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(path, []byte("replacement"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	checkFile(t, path, "replacement", 0640)
+	checkNoTemps(t, dir)
+}
 
 type errorReader struct{ err error }
 

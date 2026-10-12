@@ -147,12 +147,15 @@ cloak encrypt
 cloak encrypt config/app.yaml
 ```
 
-Encrypt/decrypt, edit, rekey and config updates write to a temporary file in the
-destination directory, sync its contents, then atomically replace the original.
-Existing file permissions and symbolic links are preserved. Hard links to the
-original inode retain the old contents rather than receiving the replacement.
+Encrypt/decrypt, edit, rekey, key generation and config updates write to a
+temporary file in the destination directory, sync its contents, then atomically
+replace the original.
+Existing file permissions and symbolic links are preserved; new file permissions
+honour the process umask. Hard links to the original inode retain the old contents
+rather than receiving the replacement.
 Initialisation without `-f` never replaces an existing config, including one
-created concurrently.
+created concurrently. Key generation without `-f` likewise never overwrites an
+existing key; forced key generation atomically replaces it.
 
 Atomic replacement protects each file from partial writes; ordinary
 encrypt/decrypt operations are not a transaction across the whole project.

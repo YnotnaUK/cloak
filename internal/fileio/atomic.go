@@ -2,6 +2,7 @@ package fileio
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -11,12 +12,13 @@ import (
 )
 
 // WriteFile atomically replaces a file, preserving existing permissions and
-// following symlinks. mode is used only when the destination does not exist.
+// following symlinks. mode, subject to umask, is used only for new destinations.
 func WriteFile(path string, data []byte, mode fs.FileMode) error {
 	return writeFile(path, bytes.NewReader(data), mode, false)
 }
 
-// CreateFile atomically creates a file without replacing an existing path.
+// CreateFile atomically creates a file with mode subject to umask, without
+// replacing an existing path.
 func CreateFile(path string, data []byte, mode fs.FileMode) error {
 	return writeFile(path, bytes.NewReader(data), mode, true)
 }
@@ -45,7 +47,11 @@ func writeFile(path string, data io.Reader, mode fs.FileMode, exclusive bool) (e
 		return statErr
 	}
 
-	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	tempMode := mode
+	if statErr == nil {
+		tempMode = 0600
+	}
+	file, err := createTemp(path, tempMode)
 	if err != nil {
 		return err
 	}
@@ -63,8 +69,10 @@ func writeFile(path string, data io.Reader, mode fs.FileMode, exclusive bool) (e
 	if _, err := io.Copy(file, data); err != nil {
 		return err
 	}
-	if err := file.Chmod(mode); err != nil {
-		return err
+	if statErr == nil {
+		if err := file.Chmod(mode); err != nil {
+			return err
+		}
 	}
 	if err := file.Sync(); err != nil {
 		return err
@@ -79,4 +87,16 @@ func writeFile(path string, data io.Reader, mode fs.FileMode, exclusive bool) (e
 		return os.Link(tmpPath, path)
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func createTemp(path string, mode fs.FileMode) (*os.File, error) {
+	for range 100 {
+		tmpPath := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp-"+rand.Text())
+		file, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		return file, err
+	}
+	return nil, fmt.Errorf("failed creating temporary file for %s: %w", path, fs.ErrExist)
 }
