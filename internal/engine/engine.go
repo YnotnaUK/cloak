@@ -343,13 +343,17 @@ func rollbackRekeyedFiles(files []rekeyedFile, committed int) error {
 	return rollbackErr
 }
 
-func atomicWriteFile(path string, data []byte, mode fs.FileMode) error {
+func atomicWriteFile(path string, data []byte, mode fs.FileMode) (err error) {
 	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
 	tmpPath := file.Name()
-	defer os.Remove(tmpPath)
+	defer func() {
+		if cleanupErr := os.Remove(tmpPath); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("failed removing temporary file %s: %w", tmpPath, cleanupErr))
+		}
+	}()
 
 	if err := file.Chmod(mode); err != nil {
 		_ = file.Close()

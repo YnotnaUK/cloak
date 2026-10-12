@@ -227,7 +227,7 @@ func (c *Config) FindRule(path string) (*Rule, error) {
 }
 
 // Save writes the updated config back to .cloak.yaml
-func (c *Config) Save() error {
+func (c *Config) Save() (err error) {
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("invalid %s: %w", ConfigFileName, err)
 	}
@@ -262,7 +262,11 @@ func (c *Config) Save() error {
 		return err
 	}
 	tmpPath := f.Name()
-	defer os.Remove(tmpPath)
+	defer func() {
+		if cleanupErr := os.Remove(tmpPath); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("failed removing temporary config %s: %w", tmpPath, cleanupErr))
+		}
+	}()
 	if err := f.Chmod(mode); err != nil {
 		_ = f.Close()
 		return err
