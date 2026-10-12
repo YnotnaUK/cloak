@@ -127,14 +127,12 @@ if [[ "$ACTUAL_CHECKSUM" != "$EXPECTED_CHECKSUM" ]]; then
   echo "Error: SHA-256 checksum mismatch for ${BINARY_NAME}; installation aborted." >&2
   exit 1
 fi
-chmod +x "$TMP_FILE"
-
 # 5. Install Binary
 if [ -w "$INSTALL_DIR" ]; then
-  mv "$TMP_FILE" "${INSTALL_DIR}/cloak"
+  install -m 0755 "$TMP_FILE" "${INSTALL_DIR}/cloak"
 else
   echo "Escalating privileges to install into ${INSTALL_DIR}..."
-  sudo mv "$TMP_FILE" "${INSTALL_DIR}/cloak"
+  sudo install -m 0755 "$TMP_FILE" "${INSTALL_DIR}/cloak"
 fi
 
 echo "Successfully installed cloak to ${INSTALL_DIR}/cloak"

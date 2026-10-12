@@ -59,6 +59,8 @@ curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/release/0.2/install.
 
 The script fails if no matching preview exists or the binary download fails.
 Both modes install to `/usr/local/bin/cloak`, replacing any existing installation.
+The verified binary is installed with mode `0755` (readable and executable by
+all users), using `sudo` when the installation directory is not writable.
 Before installing, the script downloads `SHA256SUMS` from the selected release
 and verifies the binary's SHA-256 digest. A missing or malformed manifest,
 missing or duplicate binary entry, or checksum mismatch aborts installation
