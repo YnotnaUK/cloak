@@ -3,6 +3,7 @@ package formats_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -153,7 +154,7 @@ func TestYAMLFormatterPreservesScalarTypes(t *testing.T) {
 
 	var document yaml.Node
 	if err := yaml.Unmarshal(decrypted, &document); err != nil {
-		t.Fatal(err)
+		t.Fatalf("decrypted YAML %q: %v", decrypted, err)
 	}
 	got := make(map[string]*yaml.Node)
 	for i := 0; i < len(document.Content[0].Content); i += 2 {
@@ -207,6 +208,112 @@ func TestYAMLDecryptSupportsLegacyCiphertext(t *testing.T) {
 	value := document.Content[0].Content[1]
 	if value.Tag != "!!str" || value.Value != "12345" {
 		t.Fatalf("legacy scalar = tag %q, value %q; want string %q", value.Tag, value.Value, "12345")
+	}
+}
+
+func TestYAMLDecryptPreservesLegacyPayloadPrefixAsString(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyValues := []string{
+		"\x00cloak:yaml:v1:not-json",
+		"\x00cloak:yaml:v1:{\"tag\":\"!!int\",\"style\":0,\"value\":\"123\"}",
+	}
+	for i, value := range legacyValues {
+		t.Run(fmt.Sprintf("legacy-%d", i), func(t *testing.T) {
+			ciphertext, err := mockEncrypt([]byte(value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			input, err := yaml.Marshal(map[string]string{"password": ciphertext})
+			if err != nil {
+				t.Fatal(err)
+			}
+			decrypted, err := f.Decrypt(input, mockDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document yaml.Node
+			if err := yaml.Unmarshal(decrypted, &document); err != nil {
+				t.Fatal(err)
+			}
+			scalar := document.Content[0].Content[1]
+			if scalar.Tag != "!!str" || scalar.Value != value {
+				t.Fatalf("legacy scalar = tag %q, value %q; want string %q", scalar.Tag, scalar.Value, value)
+			}
+			extracted, err := f.Extract(input, "password", mockDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(extracted) != value {
+				t.Fatalf("legacy extracted value = %q, want %q", extracted, value)
+			}
+		})
+	}
+}
+
+func TestYAMLDecryptRejectsMalformedTypedPayloads(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, payload string
+	}{
+		{name: "missing value", payload: `{"tag":"!!str","style":0}`},
+		{name: "missing style", payload: `{"tag":"!!str","value":"x"}`},
+		{name: "wrong tag type", payload: `{"tag":1,"style":0,"value":"x"}`},
+		{name: "wrong style type", payload: `{"tag":"!!str","style":"plain","value":"x"}`},
+		{name: "wrong value type", payload: `{"tag":"!!str","style":0,"value":false}`},
+		{name: "unknown field", payload: `{"tag":"!!str","style":0,"value":"x","extra":true}`},
+		{name: "invalid style", payload: `{"tag":"!!str","style":128,"value":"x"}`},
+		{name: "trailing JSON", payload: `{"tag":"!!str","style":0,"value":"x"}{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ciphertext, err := mockEncrypt([]byte(tc.payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := []byte("password: " + "CLOAK:YAML:v1:" + ciphertext + "\n")
+			if _, err := f.Decrypt(input, mockDecrypt); err == nil {
+				t.Fatal("expected malformed payload to fail decryption")
+			}
+			if _, err := f.Extract(input, "password", mockDecrypt); err == nil {
+				t.Fatal("expected malformed payload to fail extraction")
+			}
+		})
+	}
+}
+
+func TestYAMLDecryptAcceptsEmptyTypedValueAndZeroStyle(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := mockEncrypt([]byte(`{"tag":"!!str","style":0,"value":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("password: " + "CLOAK:YAML:v1:" + ciphertext + "\n")
+	decrypted, err := f.Decrypt(input, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(decrypted, &document); err != nil {
+		t.Fatal(err)
+	}
+	scalar := document.Content[0].Content[1]
+	if scalar.Tag != "!!str" || scalar.Value != "" {
+		t.Fatalf("decoded scalar = tag %q, value %q", scalar.Tag, scalar.Value)
+	}
+	extracted, err := f.Extract(input, "password", mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(extracted) != 0 {
+		t.Fatalf("extracted empty scalar = %q, want empty value", extracted)
 	}
 }
 
