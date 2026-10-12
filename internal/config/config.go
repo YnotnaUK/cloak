@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ynotnauk/cloak/internal/fileio"
 	"github.com/ynotnauk/cloak/internal/formats"
 	"gopkg.in/yaml.v3"
 )
@@ -131,7 +132,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func Init(recipients []Recipient, force bool) (err error) {
+func Init(recipients []Recipient, force bool) error {
 	for i := range recipients {
 		if recipients[i].Kind == "" {
 			recipients[i].Kind = KindUser
@@ -140,26 +141,6 @@ func Init(recipients []Recipient, force bool) (err error) {
 	if err := (&Config{Recipients: recipients}).Validate(); err != nil {
 		return err
 	}
-
-	flags := os.O_WRONLY | os.O_CREATE
-	if force {
-		flags |= os.O_TRUNC
-	} else {
-		flags |= os.O_EXCL
-	}
-
-	f, err := os.OpenFile(ConfigFileName, flags, 0644)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("%s already exists (use -f to overwrite)", ConfigFileName)
-		}
-		return err
-	}
-	defer func() {
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-	}()
 
 	cfg := Config{
 		Recipients: recipients,
@@ -178,9 +159,20 @@ func Init(recipients []Recipient, force bool) (err error) {
 		},
 	}
 
-	encoder := yaml.NewEncoder(f)
-	encoder.SetIndent(2)
-	return encoder.Encode(cfg)
+	data, err := cfg.encode()
+	if err != nil {
+		return err
+	}
+	if force {
+		return fileio.WriteFile(ConfigFileName, data, 0644)
+	}
+	if err := fileio.CreateFile(ConfigFileName, data, 0644); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%s already exists (use -f to overwrite)", ConfigFileName)
+		}
+		return err
+	}
+	return nil
 }
 
 func Load() (*Config, error) {
@@ -227,65 +219,26 @@ func (c *Config) FindRule(path string) (*Rule, error) {
 }
 
 // Save writes the updated config back to .cloak.yaml
-func (c *Config) Save() (err error) {
+func (c *Config) Save() error {
+	data, err := c.encode()
+	if err != nil {
+		return err
+	}
+	return fileio.WriteFile(ConfigFileName, data, 0644)
+}
+
+func (c *Config) encode() ([]byte, error) {
 	if err := c.Validate(); err != nil {
-		return fmt.Errorf("invalid %s: %w", ConfigFileName, err)
+		return nil, fmt.Errorf("invalid %s: %w", ConfigFileName, err)
 	}
 
 	var data bytes.Buffer
 	encoder := yaml.NewEncoder(&data)
 	encoder.SetIndent(2)
 	if err := encoder.Encode(c); err != nil {
-		return err
+		return nil, err
 	}
-
-	writePath := ConfigFileName
-	mode := os.FileMode(0644)
-	if info, err := os.Lstat(ConfigFileName); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			writePath, err = filepath.EvalSymlinks(ConfigFileName)
-			if err != nil {
-				return err
-			}
-			info, err = os.Stat(writePath)
-			if err != nil {
-				return err
-			}
-		}
-		mode = info.Mode().Perm()
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	f, err := os.CreateTemp(filepath.Dir(writePath), "."+filepath.Base(writePath)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := f.Name()
-	defer func() {
-		if cleanupErr := os.Remove(tmpPath); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
-			err = errors.Join(err, fmt.Errorf("failed removing temporary config %s: %w", tmpPath, cleanupErr))
-		}
-	}()
-	if err := f.Chmod(mode); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if _, err := f.Write(data.Bytes()); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, writePath); err != nil {
-		return err
-	}
-	return nil
+	return data.Bytes(), nil
 }
 
 func (c *Config) clone() *Config {

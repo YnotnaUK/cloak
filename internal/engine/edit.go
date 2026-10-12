@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/fileio"
 )
 
 // EditOptions controls how Edit interacts with the user.
@@ -96,7 +97,7 @@ func Edit(path string, opts EditOptions) (res EditResult, err error) {
 			return res, fmt.Errorf("edited content rejected, %s left unchanged: %w", path, err)
 		}
 
-		if err := os.WriteFile(clean, encrypted, info.Mode().Perm()); err != nil {
+		if err := fileio.WriteFile(clean, encrypted, info.Mode().Perm()); err != nil {
 			return res, fmt.Errorf("failed writing %s: %w", path, err)
 		}
 		res.Changed = true

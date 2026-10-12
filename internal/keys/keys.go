@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ynotnauk/cloak/internal/fileio"
 )
 
 const (
@@ -78,24 +80,15 @@ func Generate(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	flags := os.O_WRONLY | os.O_CREATE
 	if opts.Force {
-		flags |= os.O_TRUNC
+		err = fileio.WriteFile(path, []byte(res.Content), 0600)
 	} else {
-		flags |= os.O_EXCL
+		err = fileio.CreateFile(path, []byte(res.Content), 0600)
 	}
-	f, err := os.OpenFile(path, flags, 0600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("key file already exists at %s (use -f or --force to overwrite)", path)
 		}
-		return nil, fmt.Errorf("failed to create key file: %w", err)
-	}
-	if _, err := f.WriteString(res.Content); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("failed to write key: %w", err)
-	}
-	if err := f.Close(); err != nil {
 		return nil, fmt.Errorf("failed to write key: %w", err)
 	}
 
