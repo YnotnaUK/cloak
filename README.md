@@ -299,6 +299,7 @@ recipients:
 
 exclude:
   - .git
+  - .github
   - node_modules
   - bin
   - coverage
