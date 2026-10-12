@@ -21,58 +21,75 @@ func TestInstallerChecksumVerification(t *testing.T) {
 	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
 	for _, channel := range []string{"stable", "preview"} {
 		for _, tool := range []string{"sha256sum", "shasum"} {
-			for _, tc := range []struct {
-				name, manifest, body string
-				failManifest         bool
-				failBinary           bool
-				ok                   bool
-			}{
-				{"verified", digest + "  BINARY\n", binary, false, false, true},
-				{"tampered", digest + "  BINARY\n", binary + "# tampered\n", false, false, false},
-				{"missing manifest", "", binary, true, false, false},
-				{"missing entry", digest + "  cloak-windows-amd64.exe\n", binary, false, false, false},
-				{"duplicate entry", strings.Repeat(digest+"  BINARY\n", 2), binary, false, false, false},
-				{"invalid manifest", strings.Repeat("g", 64) + "  BINARY\n", binary, false, false, false},
-				{"empty manifest", "", binary, false, false, false},
-				{"empty binary", digest + "  BINARY\n", "", false, false, false},
-				{"failed download", digest + "  BINARY\n", binary, false, true, false},
-			} {
-				t.Run(channel+"/"+tool+"/"+tc.name, func(t *testing.T) {
-					if _, err := exec.LookPath(tool); err != nil {
-						t.Skipf("requires %s", tool)
-					}
-					if channel == "preview" {
-						if _, err := exec.LookPath("jq"); err != nil {
-							t.Skip("preview test requires jq")
+			for _, installation := range []string{"direct", "sudo"} {
+				for _, tc := range []struct {
+					name, manifest, body string
+					failManifest         bool
+					failBinary           bool
+					ok                   bool
+				}{
+					{"verified", digest + "  BINARY\n", binary, false, false, true},
+					{"tampered", digest + "  BINARY\n", binary + "# tampered\n", false, false, false},
+					{"missing manifest", "", binary, true, false, false},
+					{"missing entry", digest + "  cloak-windows-amd64.exe\n", binary, false, false, false},
+					{"duplicate entry", strings.Repeat(digest+"  BINARY\n", 2), binary, false, false, false},
+					{"invalid manifest", strings.Repeat("g", 64) + "  BINARY\n", binary, false, false, false},
+					{"empty manifest", "", binary, false, false, false},
+					{"empty binary", digest + "  BINARY\n", "", false, false, false},
+					{"failed download", digest + "  BINARY\n", binary, false, true, false},
+					{"failed install", digest + "  BINARY\n", binary, false, false, false},
+				} {
+					t.Run(channel+"/"+tool+"/"+installation+"/"+tc.name, func(t *testing.T) {
+						if _, err := exec.LookPath(tool); err != nil {
+							t.Skipf("requires %s", tool)
 						}
-					}
-					dir := t.TempDir()
-					installDir := filepath.Join(dir, "install")
-					tempDir := filepath.Join(dir, "downloads")
-					for _, path := range []string{installDir, tempDir} {
-						if err := os.Mkdir(path, 0755); err != nil {
+						if channel == "preview" {
+							if _, err := exec.LookPath("jq"); err != nil {
+								t.Skip("preview test requires jq")
+							}
+						}
+						dir := t.TempDir()
+						installDir := filepath.Join(dir, "install")
+						tempDir := filepath.Join(dir, "downloads")
+						for _, path := range []string{installDir, tempDir} {
+							if err := os.Mkdir(path, 0755); err != nil {
+								t.Fatal(err)
+							}
+						}
+						execPath := filepath.Join(installDir, "cloak")
+						if err := os.WriteFile(execPath, []byte("old binary"), 0755); err != nil {
 							t.Fatal(err)
 						}
-					}
-					execPath := filepath.Join(installDir, "cloak")
-					if err := os.WriteFile(execPath, []byte("old binary"), 0755); err != nil {
-						t.Fatal(err)
-					}
-					binaryName := "cloak-linux-amd64"
-					osName := "Linux"
-					if tool == "shasum" {
-						binaryName = "cloak-darwin-amd64"
-						osName = "Darwin"
-					}
-					for name, data := range map[string]string{
-						"manifest": strings.ReplaceAll(tc.manifest, "BINARY", binaryName),
-						"binary":   tc.body,
-					} {
-						if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0600); err != nil {
-							t.Fatal(err)
+						binaryName := "cloak-linux-amd64"
+						osName := "Linux"
+						if tool == "shasum" {
+							binaryName = "cloak-darwin-amd64"
+							osName = "Darwin"
 						}
-					}
-					mock := `
+						for name, data := range map[string]string{
+							"manifest": strings.ReplaceAll(tc.manifest, "BINARY", binaryName),
+							"binary":   tc.body,
+						} {
+							if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0600); err != nil {
+								t.Fatal(err)
+							}
+						}
+						mock := `
+umask 077
+[() {
+  if [[ "$1" == -w && "$INSTALLATION" == sudo ]]; then
+    return 1
+  fi
+  builtin [ "$@"
+}
+sudo() {
+  printf '%s\n' "$*" > "$TEST_DIR/sudo-command"
+  "$@"
+}
+install() {
+  if [[ "$FAIL_INSTALL" == true ]]; then return 1; fi
+  builtin command install "$@"
+}
 command() {
   if [[ "$*" == "-v sha256sum" && "$CHECKSUM_TOOL_TEST" == shasum ]]; then
     return 1
@@ -103,33 +120,52 @@ curl() {
   esac
 }
 `
-					localScript := strings.Replace(string(script), `INSTALL_DIR="/usr/local/bin"`, `INSTALL_DIR="`+installDir+`"`, 1)
-					args := []string{"-c", mock + localScript, "install.sh"}
-					if channel == "preview" {
-						args = append(args, "--preview", "0.2")
-					}
-					cmd := exec.Command("bash", args...)
-					cmd.Env = append(os.Environ(), "TEST_DIR="+dir, "TMPDIR="+tempDir,
-						"CHECKSUM_TOOL_TEST="+tool, "TEST_OS="+osName,
-						fmt.Sprintf("FAIL_MANIFEST=%t", tc.failManifest),
-						fmt.Sprintf("FAIL_BINARY=%t", tc.failBinary))
-					out, err := cmd.CombinedOutput()
-					if (err == nil) != tc.ok {
-						t.Fatalf("installer error = %v\n%s", err, out)
-					}
-					want := "old binary"
-					if tc.ok {
-						want = binary
-					}
-					data, err := os.ReadFile(execPath)
-					if err != nil || string(data) != want {
-						t.Fatalf("installed binary = %q, %v; want %q", data, err, want)
-					}
-					leftover, err := os.ReadDir(tempDir)
-					if err != nil || len(leftover) != 0 {
-						t.Fatalf("temporary downloads not cleaned up: %v, %v", leftover, err)
-					}
-				})
+						localScript := strings.Replace(string(script), `INSTALL_DIR="/usr/local/bin"`, `INSTALL_DIR="`+installDir+`"`, 1)
+						args := []string{"-c", mock + localScript, "install.sh"}
+						if channel == "preview" {
+							args = append(args, "--preview", "0.2")
+						}
+						cmd := exec.Command("bash", args...)
+						cmd.Env = append(os.Environ(), "TEST_DIR="+dir, "TMPDIR="+tempDir,
+							"CHECKSUM_TOOL_TEST="+tool, "TEST_OS="+osName,
+							"INSTALLATION="+installation,
+							fmt.Sprintf("FAIL_INSTALL=%t", tc.name == "failed install"),
+							fmt.Sprintf("FAIL_MANIFEST=%t", tc.failManifest),
+							fmt.Sprintf("FAIL_BINARY=%t", tc.failBinary))
+						out, err := cmd.CombinedOutput()
+						if (err == nil) != tc.ok {
+							t.Fatalf("installer error = %v\n%s", err, out)
+						}
+						want := "old binary"
+						if tc.ok {
+							want = binary
+						}
+						data, err := os.ReadFile(execPath)
+						if err != nil || string(data) != want {
+							t.Fatalf("installed binary = %q, %v; want %q", data, err, want)
+						}
+						info, err := os.Stat(execPath)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if info.Mode().Perm() != 0755 {
+							t.Fatalf("installed mode = %v, want 0755", info.Mode().Perm())
+						}
+						if tc.ok && installation == "sudo" {
+							command, err := os.ReadFile(filepath.Join(dir, "sudo-command"))
+							if err != nil || !strings.HasPrefix(string(command), "install -m 0755 ") {
+								t.Fatalf("sudo installation command = %q, %v", command, err)
+							}
+						}
+						if !tc.ok && strings.Contains(string(out), "Successfully installed") {
+							t.Fatalf("installer reported success after failure: %s", out)
+						}
+						leftover, err := os.ReadDir(tempDir)
+						if err != nil || len(leftover) != 0 {
+							t.Fatalf("temporary downloads not cleaned up: %v, %v", leftover, err)
+						}
+					})
+				}
 			}
 		}
 	}
