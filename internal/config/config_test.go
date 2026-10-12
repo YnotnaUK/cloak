@@ -61,3 +61,17 @@ func TestRecipientLifecycle(t *testing.T) {
 		t.Error("expected error removing last recipient")
 	}
 }
+
+func TestInitExcludesGitHub(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := Init([]Recipient{{Name: "alice", Key: newKey(t)}}, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.IsExcluded(".github/workflows/ci.yml") {
+		t.Fatal("initialised config does not exclude .github workflows")
+	}
+}

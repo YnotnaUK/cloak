@@ -36,25 +36,30 @@ func Process(decrypt bool, paths []string) error {
 	}
 
 	if len(paths) > 0 {
+		var errs []error
 		for _, path := range paths {
 			rule, err := resolveFile(cfg, path)
 			if err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("failed resolving %s: %w", path, err))
+				continue
 			}
 			info, err := os.Stat(path)
 			if err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("failed reading file information for %s: %w", path, err))
+				continue
 			}
 			if err := processFile(cfg, filepath.Clean(path), info.Mode().Perm(), rule, decrypt, privKey); err != nil {
-				return err
+				errs = append(errs, err)
 			}
 		}
-		return nil
+		return errors.Join(errs...)
 	}
 
-	return filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+	var errs []error
+	walkErr := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("failed walking %s: %w", path, err))
+			return nil
 		}
 
 		if cfg.IsExcluded(path) {
@@ -70,7 +75,8 @@ func Process(decrypt bool, paths []string) error {
 
 		rule, err := cfg.FindRule(path)
 		if err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("failed matching rule for %s: %w", path, err))
+			return nil
 		}
 		if rule == nil {
 			return nil
@@ -78,10 +84,18 @@ func Process(decrypt bool, paths []string) error {
 
 		info, err := d.Info()
 		if err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("failed reading file information for %s: %w", path, err))
+			return nil
 		}
-		return processFile(cfg, path, info.Mode().Perm(), rule, decrypt, privKey)
+		if err := processFile(cfg, path, info.Mode().Perm(), rule, decrypt, privKey); err != nil {
+			errs = append(errs, err)
+		}
+		return nil
 	})
+	if walkErr != nil {
+		errs = append(errs, fmt.Errorf("failed walking project: %w", walkErr))
+	}
+	return errors.Join(errs...)
 }
 
 func processFile(cfg *config.Config, path string, perm fs.FileMode, rule *config.Rule, decrypt bool, privKey string) error {
