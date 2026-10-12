@@ -28,11 +28,7 @@ func (j *JsonFormatter) Encrypt(content []byte, targetKeys []string, encryptFn f
 			if strings.HasPrefix(s, crypto.Prefix) {
 				return nil, false, nil
 			}
-			payload, err := encodeJSONPayload(s)
-			if err != nil {
-				return nil, false, err
-			}
-			return encryptValue(payload, encryptFn)
+			return encryptValue(append([]byte(jsonPayloadMarker), raw...), encryptFn)
 		}
 		return encryptValue(append([]byte(jsonPayloadMarker), raw...), encryptFn)
 	})
@@ -326,8 +322,8 @@ func isJSONDelimiter(char byte) bool {
 	}
 }
 
-// jsonPayloadMarker prefixes plaintext that holds the JSON encoding of a
-// non-string value, so decryption can restore the original type.
+// jsonPayloadMarker prefixes plaintext containing the original JSON value
+// token, so decryption can restore both its type and string spelling.
 const jsonPayloadMarker = "\x00json:"
 
 func decodeJSON(content []byte) (any, error) {
@@ -341,17 +337,6 @@ func decodeJSON(content []byte) (any, error) {
 		return nil, fmt.Errorf("invalid json: unexpected data after top-level value")
 	}
 	return data, nil
-}
-
-func encodeJSONPayload(v any) ([]byte, error) {
-	if s, ok := v.(string); ok && !strings.HasPrefix(s, jsonPayloadMarker) {
-		return []byte(s), nil
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	return append([]byte(jsonPayloadMarker), b...), nil
 }
 
 func decodeJSONPayload(plain []byte) (any, error) {
