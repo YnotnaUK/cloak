@@ -147,6 +147,18 @@ cloak encrypt
 cloak encrypt config/app.yaml
 ```
 
+Encrypt/decrypt, edit, rekey and config updates write to a temporary file in the
+destination directory, sync its contents, then atomically replace the original.
+Existing file permissions and symbolic links are preserved. Hard links to the
+original inode retain the old contents rather than receiving the replacement.
+Initialisation without `-f` never replaces an existing config, including one
+created concurrently.
+
+Atomic replacement protects each file from partial writes; ordinary
+encrypt/decrypt operations are not a transaction across the whole project.
+A crash may leave a temporary file behind, and this is not a guarantee of
+durability across power loss.
+
 ### 4. Decrypt
 `cloak decrypt` never writes plaintext to disk unless you ask for it with `--in-place`.
 ```bash

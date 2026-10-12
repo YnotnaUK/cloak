@@ -10,6 +10,7 @@ import (
 
 	"github.com/ynotnauk/cloak/internal/config"
 	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/fileio"
 	"github.com/ynotnauk/cloak/internal/formats"
 )
 
@@ -108,7 +109,7 @@ func processFile(cfg *config.Config, path string, perm fs.FileMode, rule *config
 		return fmt.Errorf("failed processing %s: %w", path, err)
 	}
 
-	if err := os.WriteFile(path, processed, perm); err != nil {
+	if err := fileio.WriteFile(path, processed, perm); err != nil {
 		return fmt.Errorf("failed writing %s: %w", path, err)
 	}
 
@@ -312,7 +313,7 @@ func rekey(cfg *config.Config, saveConfig bool) error {
 
 	committed := 0
 	for _, file := range files {
-		if err := atomicWriteFile(file.writePath, file.rekeyed, file.mode); err != nil {
+		if err := fileio.WriteFile(file.writePath, file.rekeyed, file.mode); err != nil {
 			writeErr := fmt.Errorf("failed writing %s: %w", file.path, err)
 			return errors.Join(writeErr, rollbackRekeyedFiles(files, committed))
 		}
@@ -336,39 +337,9 @@ func rollbackRekeyedFiles(files []rekeyedFile, committed int) error {
 	var rollbackErr error
 	for i := committed - 1; i >= 0; i-- {
 		file := files[i]
-		if err := atomicWriteFile(file.writePath, file.original, file.mode); err != nil {
+		if err := fileio.WriteFile(file.writePath, file.original, file.mode); err != nil {
 			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("failed restoring %s: %w", file.path, err))
 		}
 	}
 	return rollbackErr
-}
-
-func atomicWriteFile(path string, data []byte, mode fs.FileMode) (err error) {
-	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := file.Name()
-	defer func() {
-		if cleanupErr := os.Remove(tmpPath); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
-			err = errors.Join(err, fmt.Errorf("failed removing temporary file %s: %w", tmpPath, cleanupErr))
-		}
-	}()
-
-	if err := file.Chmod(mode); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
 }
