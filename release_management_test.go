@@ -1,6 +1,8 @@
 package cloak_test
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,6 +56,9 @@ curl() {
     *"page=1") cat "$TEST_DIR/page1" ;;
     *"page=2") cat "$TEST_DIR/page2" ;;
     *"page=3") echo '[]' ;;
+    *"/SHA256SUMS")
+      printf '%s  cloak-linux-amd64\n' "$TEST_CHECKSUM" > "$4"
+      ;;
     *"/download/"*)
       printf '%s\n' "$2" > "$TEST_DIR/download"
       printf '#!/usr/bin/env bash\necho "test version"\n' > "$4"
@@ -64,7 +69,8 @@ curl() {
 `
 			localScript := strings.Replace(string(script), `INSTALL_DIR="/usr/local/bin"`, `INSTALL_DIR="`+installDir+`"`, 1)
 			cmd := exec.Command("bash", "-c", mock+localScript, "install.sh", "--preview", "0.2")
-			cmd.Env = append(os.Environ(), "TEST_DIR="+dir)
+			checksum := fmt.Sprintf("%x", sha256.Sum256([]byte("#!/usr/bin/env bash\necho \"test version\"\n")))
+			cmd.Env = append(os.Environ(), "TEST_DIR="+dir, "TEST_CHECKSUM="+checksum)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("installer failed: %v\n%s", err, out)
 			}
@@ -114,6 +120,9 @@ func TestReleasePublicationAfterUploads(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(dir, "dist", "cloak-linux-amd64"), []byte("binary"), 0600); err != nil {
 					t.Fatal(err)
 				}
+				if err := os.WriteFile(filepath.Join(dir, "dist", "SHA256SUMS"), []byte("manifest"), 0600); err != nil {
+					t.Fatal(err)
+				}
 				mock := `
 gh() {
   printf '%s\n' "$*" >> "$TEST_DIR/commands"
@@ -143,6 +152,10 @@ gh() {
 				}
 				if strings.Contains(commands[0], "--prerelease") != (preview == "true") {
 					t.Fatalf("incorrect preview flag: %s", commands[0])
+				}
+				if !strings.Contains(commands[1], "dist/SHA256SUMS") ||
+					!strings.Contains(commands[1], "dist/cloak-linux-amd64") {
+					t.Fatalf("binary and manifest must be uploaded together: %s", commands[1])
 				}
 				if failUpload == "true" {
 					if len(commands) != 2 {

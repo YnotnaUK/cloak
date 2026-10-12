@@ -2,6 +2,7 @@ package updater
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -321,6 +322,7 @@ func TestReplaceBinary(t *testing.T) {
 		{"complete download", strings.NewReader("new binary"), true},
 		{"empty download", strings.NewReader(""), false},
 		{"interrupted download", io.MultiReader(strings.NewReader("partial"), failingReader{}), false},
+		{"checksum mismatch", strings.NewReader("tampered binary"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -328,7 +330,8 @@ func TestReplaceBinary(t *testing.T) {
 			if err := os.WriteFile(path, []byte("old binary"), 0755); err != nil {
 				t.Fatal(err)
 			}
-			if err := replaceBinary(path, tc.body); (err == nil) != tc.ok {
+			checksum := fmt.Sprintf("%x", sha256.Sum256([]byte("new binary")))
+			if err := replaceBinary(path, tc.body, checksum); (err == nil) != tc.ok {
 				t.Fatalf("replacement error = %v", err)
 			}
 			data, err := os.ReadFile(path)

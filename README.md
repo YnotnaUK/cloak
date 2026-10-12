@@ -34,6 +34,7 @@ The envelope version is independent of the CLI release version.
 ### To Install and Run Pre-built Binaries
 - Linux or macOS
 - `curl` and `bash`
+- `sha256sum` (Linux) or `shasum` (macOS) for release checksum verification
 
 ### To Build from Source
 - **Go:** 1.20 or newer (requires standard library `crypto/ecdh`)
@@ -58,6 +59,10 @@ curl -fsSL https://raw.githubusercontent.com/ynotnauk/cloak/release/0.2/install.
 
 The script fails if no matching preview exists or the binary download fails.
 Both modes install to `/usr/local/bin/cloak`, replacing any existing installation.
+Before installing, the script downloads `SHA256SUMS` from the selected release
+and verifies the binary's SHA-256 digest. A missing or malformed manifest,
+missing or duplicate binary entry, or checksum mismatch aborts installation
+without replacing the existing binary.
 
 ### From Source
 ```bash
@@ -84,6 +89,8 @@ CI runs lint and tests once before publishing releases from qualifying pushes:
   can replace a pending run with a newer run when several pushes arrive together.
 - Releases remain drafts until all platform binaries have uploaded successfully.
   If an upload fails, the draft remains unpublished for investigation.
+- Every release includes `SHA256SUMS` for all five platform binaries, generated
+  after the build and uploaded before publication.
 - Retention keeps the newest 20 stable releases and, separately, the newest
   20 previews per release branch.
 
@@ -108,6 +115,12 @@ checks immediately; background checks and reminders use a 24-hour interval.
 Set `CLOAK_NO_UPDATE_CHECK=1` to disable notices (explicit updates still work).
 For migration, a new SemVer release supersedes the older timestamp-style stable
 tags within the same major/minor series.
+
+Both `cloak update` and the installer require a valid checksum manifest from the
+selected release; older releases without `SHA256SUMS` cannot be installed through
+these clients. There is no unverified fallback. Checksums detect corrupt or
+modified downloads but are not signatures: they do not protect against an
+attacker who can replace both the binary and the release manifest.
 
 ---
 

@@ -1,7 +1,10 @@
 package updater
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,11 +18,12 @@ import (
 )
 
 const (
-	repoURL        = "https://api.github.com/repos/ynotnauk/cloak/releases"
-	checkInterval  = 24 * time.Hour
-	notifyInterval = 24 * time.Hour
-	checkTimeout   = 5 * time.Second
-	updateTimeout  = 30 * time.Second
+	repoURL         = "https://api.github.com/repos/ynotnauk/cloak/releases"
+	checkInterval   = 24 * time.Hour
+	notifyInterval  = 24 * time.Hour
+	checkTimeout    = 5 * time.Second
+	updateTimeout   = 30 * time.Second
+	downloadTimeout = 2 * time.Minute
 )
 
 type State struct {
@@ -309,7 +313,7 @@ func Upgrade(currentVersion string, opts Options) error {
 		ext = ".exe"
 	}
 	binaryName := fmt.Sprintf("cloak-%s-%s%s", runtime.GOOS, runtime.GOARCH, ext)
-	downloadURL := fmt.Sprintf("https://github.com/ynotnauk/cloak/releases/download/%s/%s", latest, binaryName)
+	releaseURL := fmt.Sprintf("https://github.com/ynotnauk/cloak/releases/download/%s", latest)
 
 	execPath, err := os.Executable()
 	if err != nil {
@@ -321,24 +325,86 @@ func Upgrade(currentVersion string, opts Options) error {
 	}
 
 	fmt.Printf("Downloading %s (%s)...\n", latest, binaryName)
-	downloadClient := &http.Client{Timeout: 2 * time.Minute}
-	resp, err := downloadClient.Get(downloadURL)
-	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("release asset not found at %s (HTTP %d)", downloadURL, resp.StatusCode)
-	}
-	if err := replaceBinary(execPath, resp.Body); err != nil {
+	downloadCtx, downloadCancel := context.WithTimeout(context.Background(), downloadTimeout)
+	defer downloadCancel()
+	if err := downloadVerifiedBinary(downloadCtx, execPath, releaseURL, binaryName); err != nil {
 		return err
 	}
 	fmt.Printf("Successfully updated cloak to %s!\n", latest)
 	return nil
 }
 
-func replaceBinary(execPath string, binary io.Reader) error {
+func downloadAsset(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "cloak-cli")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download failed for %s: %w", url, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("release asset not found at %s (HTTP %d)", url, resp.StatusCode)
+	}
+	return resp, nil
+}
+
+func downloadVerifiedBinary(ctx context.Context, execPath, releaseURL, binaryName string) error {
+	manifest, err := downloadAsset(ctx, releaseURL+"/SHA256SUMS")
+	if err != nil {
+		return fmt.Errorf("checksum verification requires SHA256SUMS: %w", err)
+	}
+	defer func() { _ = manifest.Body.Close() }()
+	const maxManifestSize = 1024 * 1024
+	data, err := io.ReadAll(io.LimitReader(manifest.Body, maxManifestSize+1))
+	if err != nil {
+		return fmt.Errorf("failed reading SHA256SUMS: %w", err)
+	}
+	if len(data) > maxManifestSize {
+		return fmt.Errorf("SHA256SUMS exceeds maximum size")
+	}
+	checksum, err := releaseChecksum(string(data), binaryName)
+	if err != nil {
+		return err
+	}
+	binary, err := downloadAsset(ctx, releaseURL+"/"+binaryName)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = binary.Body.Close() }()
+	return replaceBinary(execPath, binary.Body, checksum)
+}
+
+func releaseChecksum(manifest, binaryName string) (string, error) {
+	scanner := bufio.NewScanner(strings.NewReader(manifest))
+	checksum := ""
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) != 2 || len(fields[0]) != sha256.Size*2 {
+			return "", fmt.Errorf("malformed SHA256SUMS entry")
+		}
+		if _, err := hex.DecodeString(fields[0]); err != nil {
+			return "", fmt.Errorf("invalid SHA256SUMS digest: %w", err)
+		}
+		if strings.TrimPrefix(fields[1], "*") == binaryName {
+			if checksum != "" {
+				return "", fmt.Errorf("duplicate SHA256SUMS entry for %s", binaryName)
+			}
+			checksum = strings.ToLower(fields[0])
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("failed parsing SHA256SUMS: %w", err)
+	}
+	if checksum == "" {
+		return "", fmt.Errorf("SHA256SUMS has no entry for %s", binaryName)
+	}
+	return checksum, nil
+}
+
+func replaceBinary(execPath string, binary io.Reader, checksum string) error {
 	// Write to temporary file next to executable for atomic rename
 	tmpFile, err := os.CreateTemp(filepath.Dir(execPath), "cloak-upgrade-*")
 	if err != nil {
@@ -349,7 +415,8 @@ func replaceBinary(execPath string, binary io.Reader) error {
 	}
 	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
-	size, err := io.Copy(tmpFile, binary)
+	hash := sha256.New()
+	size, err := io.Copy(io.MultiWriter(tmpFile, hash), binary)
 	if err != nil {
 		_ = tmpFile.Close()
 		return fmt.Errorf("failed saving binary: %w", err)
@@ -359,6 +426,9 @@ func replaceBinary(execPath string, binary io.Reader) error {
 	}
 	if size == 0 {
 		return fmt.Errorf("downloaded release binary is empty")
+	}
+	if actual := hex.EncodeToString(hash.Sum(nil)); actual != checksum {
+		return fmt.Errorf("release binary SHA-256 checksum mismatch: expected %s, got %s", checksum, actual)
 	}
 
 	if err := os.Chmod(tmpFile.Name(), 0755); err != nil {
