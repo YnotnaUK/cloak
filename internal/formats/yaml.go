@@ -261,7 +261,7 @@ func decodeYamlScalarPayload(plain []byte) (yamlScalarPayload, error) {
 		return yamlScalarPayload{}, fmt.Errorf("YAML scalar payload tag cannot be empty")
 	}
 	const validStyles = yaml.TaggedStyle | yaml.DoubleQuotedStyle | yaml.SingleQuotedStyle | yaml.LiteralStyle | yaml.FoldedStyle | yaml.FlowStyle
-	if *encoded.Style < 0 || (*encoded.Style & ^validStyles) != 0 {
+	if (*encoded.Style & ^validStyles) != 0 {
 		return yamlScalarPayload{}, fmt.Errorf("YAML scalar payload has invalid style %d", *encoded.Style)
 	}
 	return yamlScalarPayload{Tag: *encoded.Tag, Style: *encoded.Style, Value: *encoded.Value}, nil
