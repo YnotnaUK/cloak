@@ -234,7 +234,7 @@ func (y *YamlFormatter) Extract(content []byte, path string, decryptFn func(stri
 }
 
 func isEncryptedYamlScalar(value string) bool {
-	return strings.HasPrefix(value, yamlScalarEnvelopePrefix) || strings.HasPrefix(value, crypto.Prefix)
+	return strings.HasPrefix(value, yamlScalarEnvelopePrefix+crypto.Prefix) || strings.HasPrefix(value, crypto.Prefix)
 }
 
 func decodeYamlScalarPayload(plain []byte) (yamlScalarPayload, error) {

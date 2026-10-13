@@ -253,6 +253,59 @@ func TestYAMLDecryptPreservesLegacyPayloadPrefixAsString(t *testing.T) {
 	}
 }
 
+func TestYAMLFormatterTreatsOuterMarkerAloneAsPlaintext(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"CLOAK:YAML:v1:", "CLOAK:YAML:v1:literal"} {
+		t.Run(value, func(t *testing.T) {
+			input, err := yaml.Marshal(map[string]string{"password": value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			unexpectedDecrypt := func(string) ([]byte, error) {
+				t.Fatal("decryptor called for plaintext")
+				return nil, nil
+			}
+			plain, err := f.Decrypt(input, unexpectedDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(plain) != string(input) {
+				t.Fatalf("plaintext changed: got %q, want %q", plain, input)
+			}
+			extracted, err := f.Extract(input, "password", unexpectedDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(extracted) != value {
+				t.Fatalf("plaintext extraction = %q, want %q", extracted, value)
+			}
+			encryptCalls := 0
+			encrypted, err := f.Encrypt(input, []string{"password"}, func(payload []byte) (string, error) {
+				encryptCalls++
+				return crypto.Prefix + "mock:" + base64.RawStdEncoding.EncodeToString(payload), nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if encryptCalls != 1 || strings.Contains(string(encrypted), "literal") {
+				t.Fatalf("plaintext was not encrypted: calls=%d, output=%q", encryptCalls, encrypted)
+			}
+			decrypted, err := f.Decrypt(encrypted, func(ciphertext string) ([]byte, error) {
+				return base64.RawStdEncoding.DecodeString(strings.TrimPrefix(ciphertext, crypto.Prefix+"mock:"))
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(decrypted) != string(input) {
+				t.Fatalf("round trip = %q, want %q", decrypted, input)
+			}
+		})
+	}
+}
+
 func TestYAMLDecryptRejectsMalformedTypedPayloads(t *testing.T) {
 	f, err := formats.Get("yaml")
 	if err != nil {
