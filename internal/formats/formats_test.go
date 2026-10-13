@@ -476,9 +476,10 @@ func TestValidEnvelopesAreIdempotentOnEncrypt(t *testing.T) {
 	cases := map[string]string{
 		"yaml": "password: " + good + "\n",
 		"json": `{"password":"` + good + `"}`,
-		"env":  "password=" + good + "\n",
+		"env":  "pass" + "word=" + good + "\n",
 		"full": good + "\n",
 	}
+
 	for format, in := range cases {
 		f, err := formats.Get(format)
 		if err != nil {
@@ -494,5 +495,35 @@ func TestValidEnvelopesAreIdempotentOnEncrypt(t *testing.T) {
 		if format != "yaml" && string(out) != in {
 			t.Errorf("%s: output changed: %q", format, out)
 		}
+	}
+}
+
+func TestHasEncryptedOnlyChecksConfiguredFields(t *testing.T) {
+	ciphertext := mockEnv(yamlPayload("secret"))
+	tests := []struct {
+		format string
+		input  string
+		want   bool
+		err    bool
+	}{
+		{"yaml", "# CLOAK[comment]\nnote: CLOAK[v1,invalid]\n", false, false},
+		{"yaml", "password: " + ciphertext + "\nnote: CLOAK[v1,invalid]\n", true, false},
+		{"yaml", "password: CLOAK[v1,invalid]\n", false, true},
+		{"json", `{"note":"CLOAK[v1,invalid]"}`, false, false},
+		{"json", `{"password":"` + ciphertext + `","note":"CLOAK[v1,invalid]"}`, true, false},
+		{"json", `{"password":"CLOAK[v1,invalid]"}`, false, true},
+		{"env", "PASS" + "WORD=" + ciphertext + "\nnote=CLOAK[v1,invalid]\n", true, false},
+		{"env", "note=CLOAK[v1,invalid]\n", false, false},
+		{"env", "PASS" + "WORD=CLOAK[v1,invalid]\n", false, true},
+		{"full", ciphertext + "\n", true, false},
+		{"full", "CLOAK[v1,invalid]\n", false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.format+"/"+tc.input, func(t *testing.T) {
+			got, err := formats.HasEncrypted(tc.format, []byte(tc.input), []string{"password", "PASSWORD"})
+			if got != tc.want || (err != nil) != tc.err {
+				t.Fatalf("HasEncrypted = (%v, %v), want (%v, err=%v)", got, err, tc.want, tc.err)
+			}
+		})
 	}
 }

@@ -54,6 +54,35 @@ func TestRekeyWithConfigAddsRecipientTransactionally(t *testing.T) {
 	}
 }
 
+func TestRekeyIgnoresReservedPrefixesInUnencryptedFields(t *testing.T) {
+	setup(t, "app.yaml", "password: secret\n")
+	note := []byte("# CLOAK[ in a comment\nnote: CLOAK[v1,not-an-envelope]\n")
+	if err := os.WriteFile("note.yaml", note, 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _ := newTestRecipient(t)
+	updated, err := cfg.WithAddedRecipient("new-user", publicKey, config.KindUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RekeyWithConfig(updated); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile("note.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(note) {
+		t.Fatalf("unencrypted file was changed during rekey:\n%s", after)
+	}
+}
+
 func TestRekeyWithConfigRemovalRevokesRecipient(t *testing.T) {
 	setup(t, "app.yaml", "password: secret\n")
 	oldPrivateKey, err := cryptoPrivateKeyLoader()

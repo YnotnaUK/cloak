@@ -11,7 +11,6 @@ import (
 
 	"github.com/ynotnauk/cloak/internal/config"
 	"github.com/ynotnauk/cloak/internal/crypto"
-	"github.com/ynotnauk/cloak/internal/envelope"
 	"github.com/ynotnauk/cloak/internal/fileio"
 	"github.com/ynotnauk/cloak/internal/formats"
 )
@@ -282,8 +281,13 @@ func rekey(cfg *config.Config, saveConfig bool) error {
 			return fmt.Errorf("failed reading %s: %w", path, err)
 		}
 
-		// Skip files that are not encrypted
-		if !envelope.ContainsReserved(string(content)) {
+		// Only rekey actual envelopes in configured encrypted fields. This
+		// avoids treating comments and unrelated plaintext as ciphertext.
+		hasEncrypted, err := formats.HasEncrypted(rule.Type, content, rule.EncryptedKeys)
+		if err != nil {
+			return fmt.Errorf("failed checking envelopes in %s for rekey: %w", path, err)
+		}
+		if !hasEncrypted {
 			return nil
 		}
 
