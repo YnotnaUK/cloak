@@ -69,6 +69,63 @@ func TestEnvFormatter(t *testing.T) {
 	}
 }
 
+func TestEnvFormatterSupportsValuesOverScannerLimit(t *testing.T) {
+	plain := strings.Repeat("x", 70*1024)
+	ciphertext := mockEnv(plain)
+	content := []byte("PASSWORD=" + ciphertext + "\n")
+	if len(ciphertext) <= 64*1024 {
+		t.Fatalf("test envelope is only %d bytes", len(ciphertext))
+	}
+
+	formatter := &formats.EnvFormatter{}
+	for name, run := range map[string]func() error{
+		"encrypt": func() error {
+			_, err := formatter.Encrypt(content, []string{"PASSWORD"}, func([]byte) (string, error) {
+				t.Fatal("valid existing envelope should not be encrypted again")
+				return "", nil
+			})
+			if err != nil {
+				return err
+			}
+			_, err = formatter.Encrypt([]byte("PASSWORD="+plain), []string{"PASSWORD"}, mockEncrypt)
+			return err
+		},
+		"decrypt": func() error {
+			got, err := formatter.Decrypt(content, mockDecrypt)
+			if err == nil && !strings.Contains(string(got), plain) {
+				t.Fatal("decrypted value does not contain the large plaintext")
+			}
+			return err
+		},
+		"extract": func() error {
+			got, err := formatter.Extract(content, "PASSWORD", mockDecrypt)
+			if err == nil && string(got) != plain {
+				t.Fatal("extracted value does not match the large plaintext")
+			}
+			return err
+		},
+		"has encrypted": func() error {
+			found, err := formats.HasEncrypted("env", content, []string{"PASSWORD"})
+			if err == nil && !found {
+				t.Fatal("large envelope was not detected")
+			}
+			return err
+		},
+		"rekey": func() error {
+			got, err := formats.Rekey("env", content, []string{"PASSWORD"}, mockDecrypt, mockEncrypt)
+			if err == nil && !strings.HasPrefix(string(got), "PASSWORD=CLOAK[v1,") {
+				t.Fatal("large envelope was not rekeyed")
+			}
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := run(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 func TestFullFormatter(t *testing.T) {
 	input := []byte("plain text content")
 	formatter, err := formats.Get("full")

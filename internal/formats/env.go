@@ -17,7 +17,7 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 		keySet[k] = true
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner := newEnvScanner(content)
 	var out bytes.Buffer
 
 	for scanner.Scan() {
@@ -64,7 +64,7 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 }
 
 func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, error)) ([]byte, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner := newEnvScanner(content)
 	var out bytes.Buffer
 
 	for scanner.Scan() {
@@ -104,7 +104,7 @@ func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, e
 }
 
 func (e *EnvFormatter) Extract(content []byte, path string, decryptFn func(string) ([]byte, error)) ([]byte, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner := newEnvScanner(content)
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -128,4 +128,12 @@ func (e *EnvFormatter) Extract(content []byte, path string, decryptFn func(strin
 		return nil, err
 	}
 	return nil, notFound(path)
+}
+
+func newEnvScanner(content []byte) *bufio.Scanner {
+	scanner := bufio.NewScanner(bytes.NewReader(content))
+	const defaultBufferSize = 64 * 1024
+	maxTokenSize := max(defaultBufferSize, len(content)+1)
+	scanner.Buffer(make([]byte, defaultBufferSize), maxTokenSize)
+	return scanner
 }

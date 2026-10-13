@@ -1,7 +1,6 @@
 package formats
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"strings"
@@ -39,7 +38,7 @@ func HasEncrypted(formatType string, content []byte, targetKeys []string) (bool,
 		}
 		return jsonHasEncrypted(value, keySet)
 	case "env":
-		scanner := bufio.NewScanner(bytes.NewReader(content))
+		scanner := newEnvScanner(content)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" || strings.HasPrefix(line, "#") {
@@ -227,7 +226,7 @@ func rekeyJSON(content []byte, keys map[string]bool, decryptFn func(string) ([]b
 }
 
 func rekeyEnv(content []byte, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error)) ([]byte, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner := newEnvScanner(content)
 	var out bytes.Buffer
 	for scanner.Scan() {
 		line := scanner.Text()
