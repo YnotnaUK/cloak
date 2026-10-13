@@ -3,12 +3,14 @@ package formats_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/ynotnauk/cloak/internal/crypto"
 	"github.com/ynotnauk/cloak/internal/formats"
+	"gopkg.in/yaml.v3"
 )
 
 // Mock crypto functions using current crypto.Prefix
@@ -130,6 +132,241 @@ func TestYamlMultiDocument(t *testing.T) {
 	}
 	if string(dec) != string(input) {
 		t.Fatalf("round trip mismatch:\n%s", dec)
+	}
+}
+
+func TestYAMLFormatterPreservesScalarTypes(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("password: 12345\ntoken: true\nsecret: null\nrate: 1.25\napp: hello\nquoted: 'value' # preserved comment\n")
+	keys := []string{"password", "token", "secret", "rate", "app", "quoted"}
+
+	encrypted, err := f.Encrypt(input, keys, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted, err := f.Decrypt(encrypted, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var document yaml.Node
+	if err := yaml.Unmarshal(decrypted, &document); err != nil {
+		t.Fatalf("decrypted YAML %q: %v", decrypted, err)
+	}
+	got := make(map[string]*yaml.Node)
+	for i := 0; i < len(document.Content[0].Content); i += 2 {
+		got[document.Content[0].Content[i].Value] = document.Content[0].Content[i+1]
+	}
+	for key, want := range map[string]struct {
+		tag   string
+		value string
+		style yaml.Style
+	}{
+		"password": {tag: "!!int", value: "12345"},
+		"token":    {tag: "!!bool", value: "true"},
+		"secret":   {tag: "!!null", value: "null"},
+		"rate":     {tag: "!!float", value: "1.25"},
+		"app":      {tag: "!!str", value: "hello"},
+		"quoted":   {tag: "!!str", value: "value", style: yaml.SingleQuotedStyle},
+	} {
+		node := got[key]
+		if node == nil {
+			t.Errorf("%s is missing", key)
+			continue
+		}
+		if node.Tag != want.tag || node.Value != want.value || node.Style != want.style {
+			t.Errorf("%s = tag %q, value %q, style %d; want tag %q, value %q, style %d", key, node.Tag, node.Value, node.Style, want.tag, want.value, want.style)
+		}
+	}
+
+	extracted, err := f.Extract(encrypted, "password", mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(extracted) != "12345" {
+		t.Fatalf("extracted typed scalar = %q, want %q", extracted, "12345")
+	}
+}
+
+func TestYAMLDecryptSupportsLegacyCiphertext(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("password: " + crypto.Prefix + "mock:12345\n")
+	decrypted, err := f.Decrypt(input, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(decrypted, &document); err != nil {
+		t.Fatal(err)
+	}
+	value := document.Content[0].Content[1]
+	if value.Tag != "!!str" || value.Value != "12345" {
+		t.Fatalf("legacy scalar = tag %q, value %q; want string %q", value.Tag, value.Value, "12345")
+	}
+}
+
+func TestYAMLDecryptPreservesLegacyPayloadPrefixAsString(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyValues := []string{
+		"\x00cloak:yaml:v1:not-json",
+		"\x00cloak:yaml:v1:{\"tag\":\"!!int\",\"style\":0,\"value\":\"123\"}",
+	}
+	for i, value := range legacyValues {
+		t.Run(fmt.Sprintf("legacy-%d", i), func(t *testing.T) {
+			ciphertext, err := mockEncrypt([]byte(value))
+			if err != nil {
+				t.Fatal(err)
+			}
+			input, err := yaml.Marshal(map[string]string{"password": ciphertext})
+			if err != nil {
+				t.Fatal(err)
+			}
+			decrypted, err := f.Decrypt(input, mockDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document yaml.Node
+			if err := yaml.Unmarshal(decrypted, &document); err != nil {
+				t.Fatal(err)
+			}
+			scalar := document.Content[0].Content[1]
+			if scalar.Tag != "!!str" || scalar.Value != value {
+				t.Fatalf("legacy scalar = tag %q, value %q; want string %q", scalar.Tag, scalar.Value, value)
+			}
+			extracted, err := f.Extract(input, "password", mockDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(extracted) != value {
+				t.Fatalf("legacy extracted value = %q, want %q", extracted, value)
+			}
+		})
+	}
+}
+
+func TestYAMLFormatterTreatsOuterMarkerAloneAsPlaintext(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"CLOAK:YAML:v1:", "CLOAK:YAML:v1:literal"} {
+		t.Run(value, func(t *testing.T) {
+			input, err := yaml.Marshal(map[string]string{"password": value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			unexpectedDecrypt := func(string) ([]byte, error) {
+				t.Fatal("decryptor called for plaintext")
+				return nil, nil
+			}
+			plain, err := f.Decrypt(input, unexpectedDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(plain) != string(input) {
+				t.Fatalf("plaintext changed: got %q, want %q", plain, input)
+			}
+			extracted, err := f.Extract(input, "password", unexpectedDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(extracted) != value {
+				t.Fatalf("plaintext extraction = %q, want %q", extracted, value)
+			}
+			encryptCalls := 0
+			encrypted, err := f.Encrypt(input, []string{"password"}, func(payload []byte) (string, error) {
+				encryptCalls++
+				return crypto.Prefix + "mock:" + base64.RawStdEncoding.EncodeToString(payload), nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if encryptCalls != 1 || strings.Contains(string(encrypted), "literal") {
+				t.Fatalf("plaintext was not encrypted: calls=%d, output=%q", encryptCalls, encrypted)
+			}
+			decrypted, err := f.Decrypt(encrypted, func(ciphertext string) ([]byte, error) {
+				return base64.RawStdEncoding.DecodeString(strings.TrimPrefix(ciphertext, crypto.Prefix+"mock:"))
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(decrypted) != string(input) {
+				t.Fatalf("round trip = %q, want %q", decrypted, input)
+			}
+		})
+	}
+}
+
+func TestYAMLDecryptRejectsMalformedTypedPayloads(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, payload string
+	}{
+		{name: "missing value", payload: `{"tag":"!!str","style":0}`},
+		{name: "missing style", payload: `{"tag":"!!str","value":"x"}`},
+		{name: "wrong tag type", payload: `{"tag":1,"style":0,"value":"x"}`},
+		{name: "wrong style type", payload: `{"tag":"!!str","style":"plain","value":"x"}`},
+		{name: "wrong value type", payload: `{"tag":"!!str","style":0,"value":false}`},
+		{name: "unknown field", payload: `{"tag":"!!str","style":0,"value":"x","extra":true}`},
+		{name: "invalid style", payload: `{"tag":"!!str","style":128,"value":"x"}`},
+		{name: "trailing JSON", payload: `{"tag":"!!str","style":0,"value":"x"}{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ciphertext, err := mockEncrypt([]byte(tc.payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := []byte("password: " + "CLOAK:YAML:v1:" + ciphertext + "\n")
+			if _, err := f.Decrypt(input, mockDecrypt); err == nil {
+				t.Fatal("expected malformed payload to fail decryption")
+			}
+			if _, err := f.Extract(input, "password", mockDecrypt); err == nil {
+				t.Fatal("expected malformed payload to fail extraction")
+			}
+		})
+	}
+}
+
+func TestYAMLDecryptAcceptsEmptyTypedValueAndZeroStyle(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := mockEncrypt([]byte(`{"tag":"!!str","style":0,"value":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("password: " + "CLOAK:YAML:v1:" + ciphertext + "\n")
+	decrypted, err := f.Decrypt(input, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(decrypted, &document); err != nil {
+		t.Fatal(err)
+	}
+	scalar := document.Content[0].Content[1]
+	if scalar.Tag != "!!str" || scalar.Value != "" {
+		t.Fatalf("decoded scalar = tag %q, value %q", scalar.Tag, scalar.Value)
+	}
+	extracted, err := f.Extract(input, "password", mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(extracted) != 0 {
+		t.Fatalf("extracted empty scalar = %q, want empty value", extracted)
 	}
 }
 

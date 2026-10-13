@@ -102,7 +102,7 @@ func TestEditNewSecretKeyIsEncrypted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(onDisk), "token: "+crypto.Prefix) || strings.Contains(string(onDisk), "token: abc") {
+	if !strings.Contains(string(onDisk), "token: CLOAK:YAML:v1:"+crypto.Prefix) || strings.Contains(string(onDisk), "token: abc") {
 		t.Errorf("new token left in plaintext: %s", onDisk)
 	}
 }
