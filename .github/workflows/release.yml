@@ -80,7 +80,7 @@ jobs:
         if: steps.prepare.outputs.publish == 'true'
         uses: actions/setup-go@v7
         with:
-          go-version: 'stable'
+          go-version-file: go.mod
 
       - name: Build Cross-Platform Binaries
         if: steps.prepare.outputs.publish == 'true'

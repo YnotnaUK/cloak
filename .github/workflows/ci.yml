@@ -17,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: 'stable'
+          go-version-file: go.mod
 
       - name: Check Formatting
         run: make fmt-check
@@ -37,7 +37,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: 'stable'
+          go-version-file: go.mod
 
       - name: Run Tests
         run: go test -v -cover ./...

@@ -49,7 +49,7 @@ instead of being skipped. As a consequence, a plaintext secret that begins with
 - `sha256sum` (Linux) or `shasum` (macOS) for release checksum verification
 
 ### To Build from Source
-- **Go:** 1.20 or newer (requires standard library `crypto/ecdh`)
+- **Go:** 1.27.1 or newer (requires standard library `crypto/ecdh` and `crypto/hkdf`)
 - **make:** GNU Make
 - **git**
 
