@@ -518,11 +518,57 @@ func TestHasEncryptedOnlyChecksConfiguredFields(t *testing.T) {
 		{"full", ciphertext + "\n", true, false},
 		{"full", "CLOAK[v1,invalid]\n", false, true},
 	}
+
 	for _, tc := range tests {
 		t.Run(tc.format+"/"+tc.input, func(t *testing.T) {
 			got, err := formats.HasEncrypted(tc.format, []byte(tc.input), []string{"password", "PASSWORD"})
 			if got != tc.want || (err != nil) != tc.err {
 				t.Fatalf("HasEncrypted = (%v, %v), want (%v, err=%v)", got, err, tc.want, tc.err)
+			}
+		})
+	}
+}
+
+func TestRekeyRotatesOnlyConfiguredEnvelopes(t *testing.T) {
+	unrelated := mockEnv("unrelated")
+	target := mockEnv("target")
+	tests := []struct {
+		format string
+		input  string
+	}{
+		{"yaml", "note: " + unrelated + "\n---\npassword: " + target + "\n"},
+		{"json", `{"note":"` + unrelated + `","nested":{"password":"` + target + `"}}`},
+		{"env", "NOTE=" + unrelated + "\nPASSWORD=" + target + "\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.format, func(t *testing.T) {
+			var nonce byte
+			encrypt := func(plain []byte) (string, error) {
+				value, err := mockEncrypt(plain)
+				if err != nil {
+					return "", err
+				}
+				parsed, err := envelope.Parse(value)
+				if err != nil {
+					return "", err
+				}
+				nonce++
+				parsed.Wraps[0].EphemeralPub[0] = nonce
+				return parsed.String(), nil
+			}
+			out, err := formats.Rekey(tc.format, []byte(tc.input), []string{"password", "PASSWORD"}, mockDecrypt, encrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(out), unrelated) {
+				t.Fatalf("unrelated ciphertext changed:\n%s", out)
+			}
+			if strings.Contains(string(out), target) {
+				t.Fatalf("target ciphertext was not rotated:\n%s", out)
+			}
+			found, err := formats.HasEncrypted(tc.format, out, []string{"password", "PASSWORD"})
+			if err != nil || !found {
+				t.Fatalf("rotated ciphertext not detected: found=%v, err=%v", found, err)
 			}
 		})
 	}

@@ -99,15 +99,20 @@ type jsonScanner struct {
 	offset       int
 	keys         map[string]bool
 	decrypt      bool
+	selectedOnly bool
 	transform    func([]byte) ([]byte, bool, error)
 	replacements []jsonReplacement
 }
 
 func rewriteJSON(content []byte, keys map[string]bool, decrypt bool, transform func([]byte) ([]byte, bool, error)) ([]byte, error) {
+	return rewriteJSONSelected(content, keys, decrypt, false, transform)
+}
+
+func rewriteJSONSelected(content []byte, keys map[string]bool, decrypt, selectedOnly bool, transform func([]byte) ([]byte, bool, error)) ([]byte, error) {
 	if _, err := decodeJSON(content); err != nil {
 		return nil, err
 	}
-	scanner := jsonScanner{content: content, keys: keys, decrypt: decrypt, transform: transform}
+	scanner := jsonScanner{content: content, keys: keys, decrypt: decrypt, selectedOnly: selectedOnly, transform: transform}
 	if err := scanner.rewriteValue("", false); err != nil {
 		return nil, err
 	}
@@ -161,7 +166,7 @@ func (s *jsonScanner) rewriteValue(key string, objectValue bool) error {
 		if err := s.consumeValue(); err != nil {
 			return err
 		}
-		if s.decrypt && objectValue && s.content[start] == '"' {
+		if s.decrypt && objectValue && s.content[start] == '"' && (!s.selectedOnly || s.keys[key]) {
 			replacement, changed, err := s.transform(s.content[start:s.offset])
 			if err != nil {
 				return fmt.Errorf("failed processing key %s: %w", key, err)

@@ -21,11 +21,17 @@ func HasEncrypted(formatType string, content []byte, targetKeys []string) (bool,
 
 	switch formatType {
 	case "yaml":
-		var root yaml.Node
-		if err := yaml.Unmarshal(content, &root); err != nil {
-			return false, fmt.Errorf("invalid yaml: %w", err)
+		docs, err := decodeYamlDocs(content)
+		if err != nil {
+			return false, err
 		}
-		return yamlHasEncrypted(&root, keySet)
+		for _, doc := range docs {
+			found, err := yamlHasEncrypted(doc, keySet)
+			if err != nil || found {
+				return found, err
+			}
+		}
+		return false, nil
 	case "json":
 		value, err := decodeJSON(content)
 		if err != nil {
@@ -59,6 +65,50 @@ func HasEncrypted(formatType string, content []byte, targetKeys []string) (bool,
 	}
 }
 
+// Rekey replaces ciphertext in configured fields without decrypting envelopes
+// in other fields. Plaintext configured fields are left unchanged.
+func Rekey(formatType string, content []byte, targetKeys []string, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error)) ([]byte, error) {
+	keySet := make(map[string]bool, len(targetKeys))
+	for _, key := range targetKeys {
+		keySet[key] = true
+	}
+
+	switch formatType {
+	case "yaml":
+		docs, err := decodeYamlDocs(content)
+		if err != nil {
+			return nil, err
+		}
+		for _, doc := range docs {
+			if err := yamlRekey(doc, keySet, decryptFn, encryptFn); err != nil {
+				return nil, err
+			}
+		}
+		return encodeYamlDocs(docs)
+	case "json":
+		return rekeyJSON(content, keySet, decryptFn, encryptFn)
+	case "env":
+		return rekeyEnv(content, keySet, decryptFn, encryptFn)
+	case "full":
+		value := strings.TrimSpace(string(content))
+		found, err := checkEnvelope(value)
+		if err != nil || !found {
+			return content, err
+		}
+		plain, err := decryptFn(value)
+		if err != nil {
+			return nil, err
+		}
+		ciphertext, err := encryptFn(plain)
+		if err != nil {
+			return nil, err
+		}
+		return []byte(ciphertext + "\n"), nil
+	default:
+		return nil, fmt.Errorf("unsupported format type: %s", formatType)
+	}
+}
+
 func yamlHasEncrypted(node *yaml.Node, keys map[string]bool) (bool, error) {
 	switch node.Kind {
 	case yaml.MappingNode:
@@ -84,6 +134,41 @@ func yamlHasEncrypted(node *yaml.Node, keys map[string]bool) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func yamlRekey(node *yaml.Node, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error)) error {
+	switch node.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key, value := node.Content[i], node.Content[i+1]
+			if keys[key.Value] && value.Kind == yaml.ScalarNode {
+				found, err := checkEnvelope(value.Value)
+				if err != nil {
+					return fmt.Errorf("YAML scalar %q: %w", key.Value, err)
+				}
+				if found {
+					plain, err := decryptFn(value.Value)
+					if err != nil {
+						return fmt.Errorf("failed decrypting YAML scalar %q for rekey: %w", key.Value, err)
+					}
+					value.Value, err = encryptFn(plain)
+					if err != nil {
+						return fmt.Errorf("failed re-encrypting YAML scalar %q: %w", key.Value, err)
+					}
+				}
+			}
+			if err := yamlRekey(value, keys, decryptFn, encryptFn); err != nil {
+				return err
+			}
+		}
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, child := range node.Content {
+			if err := yamlRekey(child, keys, decryptFn, encryptFn); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func jsonHasEncrypted(value any, keys map[string]bool) (bool, error) {
@@ -112,6 +197,79 @@ func jsonHasEncrypted(value any, keys map[string]bool) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func rekeyJSON(content []byte, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error)) ([]byte, error) {
+	return rewriteJSONSelected(content, keys, true, true, func(raw []byte) ([]byte, bool, error) {
+		value, err := decodeJSON(raw)
+		if err != nil {
+			return nil, false, err
+		}
+		ciphertext, ok := value.(string)
+		if !ok {
+			return nil, false, nil
+		}
+		found, err := checkEnvelope(ciphertext)
+		if err != nil || !found {
+			return nil, false, err
+		}
+		plain, err := decryptFn(ciphertext)
+		if err != nil {
+			return nil, false, err
+		}
+		rekeyed, err := encryptFn(plain)
+		if err != nil {
+			return nil, false, err
+		}
+		encoded, err := encodeJSONString(rekeyed)
+		return encoded, true, err
+	})
+}
+
+func rekeyEnv(content []byte, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error)) ([]byte, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(content))
+	var out bytes.Buffer
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			out.WriteString(line)
+			out.WriteByte('\n')
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		key = strings.TrimSpace(key)
+		if !ok || !keys[key] {
+			out.WriteString(line)
+			out.WriteByte('\n')
+			continue
+		}
+		value = strings.TrimSpace(value)
+		found, err := checkEnvelope(value)
+		if err != nil {
+			return nil, fmt.Errorf("key %s: %w", key, err)
+		}
+		if !found {
+			out.WriteString(line)
+			out.WriteByte('\n')
+			continue
+		}
+		plain, err := decryptFn(value)
+		if err != nil {
+			return nil, fmt.Errorf("failed decrypting key %s for rekey: %w", key, err)
+		}
+		ciphertext, err := encryptFn(plain)
+		if err != nil {
+			return nil, fmt.Errorf("failed re-encrypting key %s: %w", key, err)
+		}
+		out.WriteString(key)
+		out.WriteByte('=')
+		out.WriteString(ciphertext)
+		out.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 func checkEnvelope(value string) (bool, error) {
