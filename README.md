@@ -9,11 +9,22 @@ A declarative, in-place secrets encryption tool inspired by SOPS and age, writte
 
 Cloak encrypts sensitive values inside structured files (.env, .json, .yaml) or entire files while leaving non-sensitive keys, comments, and structure intact.
 
-Encrypted values use the `CLOAK:v1:` envelope prefix. This intentionally replaces
-the earlier `CLOAK:v2:` label without changing the cryptographic payload.
-Existing `CLOAK:v2:` values are no longer recognised: decrypt them with the
-previous binary before upgrading, then re-encrypt them with the new binary.
-The envelope version is independent of the CLI release version.
+Encrypted values use a self-delimiting envelope:
+
+```
+CLOAK[v1,iv:<b64>,data:<b64>,wrap:<epk>.<iv>.<key>[,wrap:...]]
+```
+
+The format is **unstable until the first release**: it may change without a
+migration path, so re-encrypt files after upgrading a pre-release build. From
+the first release `v1` is frozen and will always remain readable. The envelope
+version is independent of the CLI release version.
+
+Cloak validates the whole envelope (structure, base64, lengths) before treating
+a value as ciphertext. Values that start with `CLOAK[` (or the retired
+`CLOAK:v…` / `CLOAK:YAML:` prefixes) but are not valid envelopes cause an error
+instead of being skipped. As a consequence, a plaintext secret that begins with
+`CLOAK[` cannot be stored.
 
 ---
 
@@ -23,9 +34,8 @@ The envelope version is independent of the CLI release version.
 - Envelope Encryption: Uses a random 32-byte Data Encryption Key (DEK) wrapped per recipient.
 - Declarative Configuration: Define rules and keys once in .cloak.yaml.
 - Targeted Key Encryption: Encrypt only specific keys (password, token, etc.) while keeping the rest readable.
-- AST-Preserving YAML: Retains formatting, scalar types, and comments. Newly
-  encrypted scalars preserve their types on decryption; older ciphertexts
-  decrypt as strings.
+- AST-Preserving YAML: Retains formatting, scalar types, and comments.
+  Encrypted scalars preserve their types on decryption.
 - Idempotent: Safe to run repeatedly without double-encrypting.
 - Multi-Recipient & Rekeying: Add or remove team members with automatic DEK rotation.
 

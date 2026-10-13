@@ -11,6 +11,7 @@ import (
 
 	"github.com/ynotnauk/cloak/internal/config"
 	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/envelope"
 	"github.com/ynotnauk/cloak/internal/fileio"
 	"github.com/ynotnauk/cloak/internal/formats"
 )
@@ -282,7 +283,7 @@ func rekey(cfg *config.Config, saveConfig bool) error {
 		}
 
 		// Skip files that are not encrypted
-		if !strings.Contains(string(content), crypto.Prefix) {
+		if !envelope.ContainsReserved(string(content)) {
 			return nil
 		}
 

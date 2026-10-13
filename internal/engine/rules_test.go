@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ynotnauk/cloak/internal/config"
+	"github.com/ynotnauk/cloak/internal/crypto"
 	"gopkg.in/yaml.v3"
 )
 
@@ -145,7 +146,7 @@ func TestProcessContinuesAfterFileErrors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if bytes.Equal(afterGood, good) || !bytes.Contains(afterGood, []byte("CLOAK:v1:")) {
+			if bytes.Equal(afterGood, good) || !bytes.Contains(afterGood, []byte("CLOAK[v1,")) {
 				t.Fatalf("valid file was not processed after the error: %s", afterGood)
 			}
 			afterWorkflow, err := os.ReadFile(".github/workflows/ci.yml")
@@ -161,7 +162,12 @@ func TestProcessContinuesAfterFileErrors(t *testing.T) {
 
 func TestProcessSkipsWriteWhenContentIsUnchanged(t *testing.T) {
 	setup(t, "app.yaml", "password: setup\n")
-	content := []byte("{\n  \"password\": \"CLOAK:v1:already-encrypted\",\n  \"html\": \"<tag>&\"\n}\n")
+	recipient, _ := newTestRecipient(t)
+	ciphertext, err := crypto.Encrypt([]byte(`{"tag":"!!str","style":0,"value":"x"}`), []string{recipient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("{\n  \"password\": \"" + ciphertext + "\",\n  \"html\": \"<tag>&\"\n}\n")
 	if err := os.WriteFile("app.json", content, 0600); err != nil {
 		t.Fatal(err)
 	}

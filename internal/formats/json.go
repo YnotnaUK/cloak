@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/envelope"
 )
 
 type JsonFormatter struct{}
@@ -25,10 +25,13 @@ func (j *JsonFormatter) Encrypt(content []byte, targetKeys []string, encryptFn f
 			return nil, false, err
 		}
 		if s, ok := value.(string); ok {
-			if strings.HasPrefix(s, crypto.Prefix) {
+			encrypted, err := envelope.Check(s)
+			if err != nil {
+				return nil, false, err
+			}
+			if encrypted {
 				return nil, false, nil
 			}
-			return encryptValue(append([]byte(jsonPayloadMarker), raw...), encryptFn)
 		}
 		return encryptValue(append([]byte(jsonPayloadMarker), raw...), encryptFn)
 	})
@@ -41,7 +44,14 @@ func (j *JsonFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, 
 			return nil, false, err
 		}
 		s, ok := value.(string)
-		if !ok || !strings.HasPrefix(s, crypto.Prefix) {
+		if !ok {
+			return nil, false, nil
+		}
+		encrypted, err := envelope.Check(s)
+		if err != nil {
+			return nil, false, err
+		}
+		if !encrypted {
 			return nil, false, nil
 		}
 		plain, err := decryptFn(s)
@@ -376,7 +386,11 @@ func (j *JsonFormatter) Extract(content []byte, path string, decryptFn func(stri
 	case map[string]any, []any:
 		return nil, notScalar(path)
 	case string:
-		if strings.HasPrefix(v, crypto.Prefix) {
+		encrypted, err := envelope.Check(v)
+		if err != nil {
+			return nil, err
+		}
+		if encrypted {
 			plain, err := decryptFn(v)
 			if err != nil {
 				return nil, err

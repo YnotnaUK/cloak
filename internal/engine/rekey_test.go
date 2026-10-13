@@ -94,7 +94,7 @@ func TestRekeyWithConfigRemovalRevokesRecipient(t *testing.T) {
 
 func TestRekeyWithConfigPreflightsEveryFileBeforeWriting(t *testing.T) {
 	setup(t, "a.yaml", "password: secret\n")
-	if err := os.WriteFile("z.yaml", []byte("password: CLOAK:v1:invalid\n"), 0600); err != nil {
+	if err := os.WriteFile("z.yaml", []byte("password: CLOAK[v1,invalid]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 

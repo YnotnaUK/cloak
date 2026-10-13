@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/envelope"
 )
 
 type EnvFormatter struct{}
@@ -36,8 +36,11 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 		v := parts[1]
 
 		if keySet[k] {
-			trimmedVal := strings.TrimSpace(v)
-			if strings.HasPrefix(trimmedVal, crypto.Prefix) {
+			encrypted, err := envelope.Check(strings.TrimSpace(v))
+			if err != nil {
+				return nil, fmt.Errorf("key %s: %w", k, err)
+			}
+			if encrypted {
 				out.WriteString(line)
 				out.WriteByte('\n')
 				continue
@@ -78,9 +81,12 @@ func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, e
 		k := strings.TrimSpace(parts[0])
 		v := parts[1]
 
-		// Attempt decrypt if it looks encrypted
-		if strings.HasPrefix(v, crypto.Prefix) {
-			decVal, err := decryptFn(v)
+		encrypted, err := envelope.Check(strings.TrimSpace(v))
+		if err != nil {
+			return nil, fmt.Errorf("key %s: %w", k, err)
+		}
+		if encrypted {
+			decVal, err := decryptFn(strings.TrimSpace(v))
 			if err != nil {
 				return nil, fmt.Errorf("failed decrypting key %s: %w", k, err)
 			}
@@ -109,8 +115,12 @@ func (e *EnvFormatter) Extract(content []byte, path string, decryptFn func(strin
 		if strings.TrimSpace(k) != path {
 			continue
 		}
-		if strings.HasPrefix(v, crypto.Prefix) {
-			return decryptFn(v)
+		encrypted, err := envelope.Check(strings.TrimSpace(v))
+		if err != nil {
+			return nil, fmt.Errorf("key %s: %w", k, err)
+		}
+		if encrypted {
+			return decryptFn(strings.TrimSpace(v))
 		}
 		return []byte(v), nil
 	}

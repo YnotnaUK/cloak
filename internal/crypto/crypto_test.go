@@ -4,10 +4,12 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/envelope"
 )
 
 func generateTestKeyPair(t *testing.T) (string, string) {
@@ -31,7 +33,7 @@ func TestMultiRecipientEncryptDecrypt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encryption failed: %v", err)
 	}
-	if !strings.HasPrefix(envelope, "CLOAK:v1:") {
+	if !strings.HasPrefix(envelope, "CLOAK[v1,") {
 		t.Fatalf("expected v1 envelope, got %q", envelope)
 	}
 
@@ -56,15 +58,18 @@ func TestMultiRecipientEncryptDecrypt(t *testing.T) {
 
 func TestEnvelopeVersion(t *testing.T) {
 	pub, priv := generateTestKeyPair(t)
-	envelope, err := crypto.Encrypt([]byte("secret"), []string{pub})
+	value, err := crypto.Encrypt([]byte("secret"), []string{pub})
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldEnvelope := "CLOAK:v2:" + strings.TrimPrefix(envelope, "CLOAK:v1:")
-	if _, err := crypto.Decrypt(oldEnvelope, priv); err == nil || err.Error() != "invalid envelope prefix" {
-		t.Fatalf("expected v2 envelope rejection, got %v", err)
+	if _, err := crypto.Decrypt("CLOAK:v1:"+strings.TrimPrefix(value, "CLOAK[v1,"), priv); err == nil || !errors.Is(err, envelope.ErrMalformed) {
+		t.Fatalf("pre-release envelope error = %v", err)
 	}
-	if _, err := crypto.Decrypt("CLOAK:v1:invalid", priv); err == nil || err.Error() != "malformed cloak v1 envelope" {
-		t.Fatalf("expected malformed v1 error, got %v", err)
+	if _, err := crypto.Decrypt("CLOAK[v1,invalid]", priv); err == nil || !errors.Is(err, envelope.ErrMalformed) {
+		t.Fatalf("malformed envelope error = %v", err)
+	}
+	tampered := value[:len(value)-3] + "AA]"
+	if _, err := crypto.Decrypt(tampered, priv); err == nil {
+		t.Fatal("tampered envelope decrypted")
 	}
 }
