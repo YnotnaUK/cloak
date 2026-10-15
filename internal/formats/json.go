@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/envelope"
 )
 
 type JsonFormatter struct{}
@@ -25,10 +25,13 @@ func (j *JsonFormatter) Encrypt(content []byte, targetKeys []string, encryptFn f
 			return nil, false, err
 		}
 		if s, ok := value.(string); ok {
-			if strings.HasPrefix(s, crypto.Prefix) {
+			encrypted, err := envelope.Check(s)
+			if err != nil {
+				return nil, false, err
+			}
+			if encrypted {
 				return nil, false, nil
 			}
-			return encryptValue(append([]byte(jsonPayloadMarker), raw...), encryptFn)
 		}
 		return encryptValue(append([]byte(jsonPayloadMarker), raw...), encryptFn)
 	})
@@ -41,7 +44,14 @@ func (j *JsonFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, 
 			return nil, false, err
 		}
 		s, ok := value.(string)
-		if !ok || !strings.HasPrefix(s, crypto.Prefix) {
+		if !ok {
+			return nil, false, nil
+		}
+		encrypted, err := envelope.Check(s)
+		if err != nil {
+			return nil, false, err
+		}
+		if !encrypted {
 			return nil, false, nil
 		}
 		plain, err := decryptFn(s)
@@ -89,15 +99,20 @@ type jsonScanner struct {
 	offset       int
 	keys         map[string]bool
 	decrypt      bool
+	selectedOnly bool
 	transform    func([]byte) ([]byte, bool, error)
 	replacements []jsonReplacement
 }
 
 func rewriteJSON(content []byte, keys map[string]bool, decrypt bool, transform func([]byte) ([]byte, bool, error)) ([]byte, error) {
+	return rewriteJSONSelected(content, keys, decrypt, false, transform)
+}
+
+func rewriteJSONSelected(content []byte, keys map[string]bool, decrypt, selectedOnly bool, transform func([]byte) ([]byte, bool, error)) ([]byte, error) {
 	if _, err := decodeJSON(content); err != nil {
 		return nil, err
 	}
-	scanner := jsonScanner{content: content, keys: keys, decrypt: decrypt, transform: transform}
+	scanner := jsonScanner{content: content, keys: keys, decrypt: decrypt, selectedOnly: selectedOnly, transform: transform}
 	if err := scanner.rewriteValue("", false); err != nil {
 		return nil, err
 	}
@@ -151,7 +166,7 @@ func (s *jsonScanner) rewriteValue(key string, objectValue bool) error {
 		if err := s.consumeValue(); err != nil {
 			return err
 		}
-		if s.decrypt && objectValue && s.content[start] == '"' {
+		if s.decrypt && objectValue && s.content[start] == '"' && (!s.selectedOnly || s.keys[key]) {
 			replacement, changed, err := s.transform(s.content[start:s.offset])
 			if err != nil {
 				return fmt.Errorf("failed processing key %s: %w", key, err)
@@ -376,7 +391,11 @@ func (j *JsonFormatter) Extract(content []byte, path string, decryptFn func(stri
 	case map[string]any, []any:
 		return nil, notScalar(path)
 	case string:
-		if strings.HasPrefix(v, crypto.Prefix) {
+		encrypted, err := envelope.Check(v)
+		if err != nil {
+			return nil, err
+		}
+		if encrypted {
 			plain, err := decryptFn(v)
 			if err != nil {
 				return nil, err

@@ -5,9 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/ynotnauk/cloak/internal/config"
+	"github.com/ynotnauk/cloak/internal/crypto"
+	"gopkg.in/yaml.v3"
 )
 
 func newTestRecipient(t *testing.T) (string, string) {
@@ -54,6 +57,120 @@ func TestRekeyWithConfigAddsRecipientTransactionally(t *testing.T) {
 	}
 }
 
+func TestRekeyIgnoresReservedPrefixesInUnencryptedFields(t *testing.T) {
+	setup(t, "app.yaml", "password: secret\n")
+	note := []byte("# CLOAK[ in a comment\nnote: CLOAK[v1,not-an-envelope]\n")
+	if err := os.WriteFile("note.yaml", note, 0640); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _ := newTestRecipient(t)
+	updated, err := cfg.WithAddedRecipient("new-user", publicKey, config.KindUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RekeyWithConfig(updated); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile("note.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(note) {
+		t.Fatalf("unencrypted file was changed during rekey:\n%s", after)
+	}
+}
+
+func TestRekeyOnlyRotatesConfiguredFieldsAcrossYAMLDocuments(t *testing.T) {
+	setup(t, "app.yaml", "password: first\n---\npassword: second\n")
+	oldPrivateKey, err := cryptoPrivateKeyLoader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := crypto.Encrypt([]byte("unrelated encrypted value"), cfg.Keys())
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile("app.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = []byte(strings.Replace(string(content), "---", "note: "+unrelated+"\n---", 1))
+	if err := os.WriteFile("app.yaml", content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	firstBefore, secondBefore := yamlPasswords(t, content)
+
+	newPublicKey, newPrivateKey := newTestRecipient(t)
+	updated, err := cfg.WithAddedRecipient("new-user", newPublicKey, config.KindUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _, err = updated.WithoutRecipient("me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RekeyWithConfig(updated); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile("app.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAfter, secondAfter := yamlPasswords(t, after)
+	if firstAfter == firstBefore || secondAfter == secondBefore {
+		t.Fatal("targeted ciphertexts in both YAML documents must be rotated")
+	}
+	if !strings.Contains(string(after), unrelated) {
+		t.Fatal("ciphertext in an unrelated field was changed")
+	}
+
+	if plain, err := crypto.Decrypt(firstAfter, newPrivateKey); err != nil || !strings.Contains(string(plain), `"value":"first"`) {
+		t.Fatalf("new recipient cannot decrypt first document: %q, %v", plain, err)
+	}
+	if plain, err := crypto.Decrypt(secondAfter, newPrivateKey); err != nil || !strings.Contains(string(plain), `"value":"second"`) {
+		t.Fatalf("new recipient cannot decrypt second document: %q, %v", plain, err)
+	}
+	if _, err := crypto.Decrypt(firstAfter, oldPrivateKey); err == nil {
+		t.Fatal("removed recipient can still decrypt a configured field")
+	}
+	if plain, err := crypto.Decrypt(unrelated, oldPrivateKey); err != nil || string(plain) != "unrelated encrypted value" {
+		t.Fatalf("unrelated ciphertext was unexpectedly rekeyed: %q, %v", plain, err)
+	}
+}
+
+func yamlPasswords(t *testing.T, content []byte) (string, string) {
+	t.Helper()
+	dec := yaml.NewDecoder(strings.NewReader(string(content)))
+	var values [2]string
+	for i := range values {
+		var doc yaml.Node
+		if err := dec.Decode(&doc); err != nil {
+			t.Fatalf("decode YAML document %d: %v", i+1, err)
+		}
+		root := doc.Content[0]
+		for j := 0; j+1 < len(root.Content); j += 2 {
+			if root.Content[j].Value == "password" {
+				values[i] = root.Content[j+1].Value
+			}
+		}
+		if values[i] == "" {
+			t.Fatalf("password missing from YAML document %d", i+1)
+		}
+	}
+	return values[0], values[1]
+}
+
 func TestRekeyWithConfigRemovalRevokesRecipient(t *testing.T) {
 	setup(t, "app.yaml", "password: secret\n")
 	oldPrivateKey, err := cryptoPrivateKeyLoader()
@@ -94,7 +211,7 @@ func TestRekeyWithConfigRemovalRevokesRecipient(t *testing.T) {
 
 func TestRekeyWithConfigPreflightsEveryFileBeforeWriting(t *testing.T) {
 	setup(t, "a.yaml", "password: secret\n")
-	if err := os.WriteFile("z.yaml", []byte("password: CLOAK:v1:invalid\n"), 0600); err != nil {
+	if err := os.WriteFile("z.yaml", []byte("password: CLOAK[v1,invalid]\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 

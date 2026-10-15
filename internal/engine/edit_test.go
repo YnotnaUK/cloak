@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/ynotnauk/cloak/internal/config"
-	"github.com/ynotnauk/cloak/internal/crypto"
 )
 
 func setup(t *testing.T, name, content string) {
@@ -79,7 +78,7 @@ func TestEditChange(t *testing.T) {
 	}
 
 	onDisk, _ := os.ReadFile("app.yaml")
-	if strings.Contains(string(onDisk), "new") || !strings.Contains(string(onDisk), crypto.Prefix) {
+	if strings.Contains(string(onDisk), "new") || !strings.Contains(string(onDisk), "CLOAK[v1,") {
 		t.Errorf("file not re-encrypted: %s", onDisk)
 	}
 	info, _ := os.Stat("app.yaml")
@@ -102,7 +101,7 @@ func TestEditNewSecretKeyIsEncrypted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(onDisk), "token: CLOAK:YAML:v1:"+crypto.Prefix) || strings.Contains(string(onDisk), "token: abc") {
+	if !strings.Contains(string(onDisk), "token: CLOAK[v1,") || strings.Contains(string(onDisk), "token: abc") {
 		t.Errorf("new token left in plaintext: %s", onDisk)
 	}
 }

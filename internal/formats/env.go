@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/envelope"
 )
 
 type EnvFormatter struct{}
@@ -17,7 +17,7 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 		keySet[k] = true
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner := newEnvScanner(content)
 	var out bytes.Buffer
 
 	for scanner.Scan() {
@@ -36,8 +36,11 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 		v := parts[1]
 
 		if keySet[k] {
-			trimmedVal := strings.TrimSpace(v)
-			if strings.HasPrefix(trimmedVal, crypto.Prefix) {
+			encrypted, err := envelope.Check(strings.TrimSpace(v))
+			if err != nil {
+				return nil, fmt.Errorf("key %s: %w", k, err)
+			}
+			if encrypted {
 				out.WriteString(line)
 				out.WriteByte('\n')
 				continue
@@ -61,7 +64,7 @@ func (e *EnvFormatter) Encrypt(content []byte, targetKeys []string, encryptFn fu
 }
 
 func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, error)) ([]byte, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner := newEnvScanner(content)
 	var out bytes.Buffer
 
 	for scanner.Scan() {
@@ -78,9 +81,12 @@ func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, e
 		k := strings.TrimSpace(parts[0])
 		v := parts[1]
 
-		// Attempt decrypt if it looks encrypted
-		if strings.HasPrefix(v, crypto.Prefix) {
-			decVal, err := decryptFn(v)
+		encrypted, err := envelope.Check(strings.TrimSpace(v))
+		if err != nil {
+			return nil, fmt.Errorf("key %s: %w", k, err)
+		}
+		if encrypted {
+			decVal, err := decryptFn(strings.TrimSpace(v))
 			if err != nil {
 				return nil, fmt.Errorf("failed decrypting key %s: %w", k, err)
 			}
@@ -98,7 +104,7 @@ func (e *EnvFormatter) Decrypt(content []byte, decryptFn func(string) ([]byte, e
 }
 
 func (e *EnvFormatter) Extract(content []byte, path string, decryptFn func(string) ([]byte, error)) ([]byte, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner := newEnvScanner(content)
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -109,8 +115,12 @@ func (e *EnvFormatter) Extract(content []byte, path string, decryptFn func(strin
 		if strings.TrimSpace(k) != path {
 			continue
 		}
-		if strings.HasPrefix(v, crypto.Prefix) {
-			return decryptFn(v)
+		encrypted, err := envelope.Check(strings.TrimSpace(v))
+		if err != nil {
+			return nil, fmt.Errorf("key %s: %w", k, err)
+		}
+		if encrypted {
+			return decryptFn(strings.TrimSpace(v))
 		}
 		return []byte(v), nil
 	}
@@ -118,4 +128,12 @@ func (e *EnvFormatter) Extract(content []byte, path string, decryptFn func(strin
 		return nil, err
 	}
 	return nil, notFound(path)
+}
+
+func newEnvScanner(content []byte) *bufio.Scanner {
+	scanner := bufio.NewScanner(bytes.NewReader(content))
+	const defaultBufferSize = 64 * 1024
+	maxTokenSize := max(defaultBufferSize, len(content)+1)
+	scanner.Buffer(make([]byte, defaultBufferSize), maxTokenSize)
+	return scanner
 }

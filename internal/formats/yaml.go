@@ -7,15 +7,12 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"strings"
 
-	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/envelope"
 	"gopkg.in/yaml.v3"
 )
 
 type YamlFormatter struct{}
-
-const yamlScalarEnvelopePrefix = "CLOAK:YAML:v1:"
 
 type yamlScalarPayload struct {
 	Tag   string
@@ -94,7 +91,11 @@ func walkYamlEncrypt(node *yaml.Node, keys map[string]bool, encryptFn func([]byt
 			valNode := node.Content[i+1]
 
 			if keys[keyNode.Value] && valNode.Kind == yaml.ScalarNode {
-				if isEncryptedYamlScalar(valNode.Value) {
+				encrypted, err := envelope.Check(valNode.Value)
+				if err != nil {
+					return fmt.Errorf("YAML scalar %q: %w", keyNode.Value, err)
+				}
+				if encrypted {
 					continue // Already encrypted
 				}
 
@@ -110,7 +111,7 @@ func walkYamlEncrypt(node *yaml.Node, keys map[string]bool, encryptFn func([]byt
 				if err != nil {
 					return fmt.Errorf("failed encrypting YAML scalar %q: %w", keyNode.Value, err)
 				}
-				valNode.Value = yamlScalarEnvelopePrefix + enc
+				valNode.Value = enc
 				valNode.Tag = "!!str"
 			} else {
 				if err := walkYamlEncrypt(valNode, keys, encryptFn); err != nil {
@@ -134,25 +135,25 @@ func walkYamlDecrypt(node *yaml.Node, decryptFn func(string) ([]byte, error)) er
 		for i := 0; i < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
 			valNode := node.Content[i+1]
-			if valNode.Kind == yaml.ScalarNode && isEncryptedYamlScalar(valNode.Value) {
-				typedPayload := strings.HasPrefix(valNode.Value, yamlScalarEnvelopePrefix)
-				envelope := strings.TrimPrefix(valNode.Value, yamlScalarEnvelopePrefix)
-				dec, err := decryptFn(envelope)
+			encrypted := false
+			if valNode.Kind == yaml.ScalarNode {
+				var err error
+				if encrypted, err = envelope.Check(valNode.Value); err != nil {
+					return fmt.Errorf("YAML scalar %q: %w", keyNode.Value, err)
+				}
+			}
+			if encrypted {
+				dec, err := decryptFn(valNode.Value)
 				if err != nil {
 					return fmt.Errorf("failed decrypting YAML scalar %q: %w", keyNode.Value, err)
 				}
-				if typedPayload {
-					payload, err := decodeYamlScalarPayload(dec)
-					if err != nil {
-						return fmt.Errorf("failed decoding YAML scalar %q: %w", keyNode.Value, err)
-					}
-					valNode.Value = payload.Value
-					valNode.Tag = payload.Tag
-					valNode.Style = payload.Style
-				} else {
-					valNode.Value = string(dec)
-					valNode.Tag = "!!str"
+				payload, err := decodeYamlScalarPayload(dec)
+				if err != nil {
+					return fmt.Errorf("failed decoding YAML scalar %q: %w", keyNode.Value, err)
 				}
+				valNode.Value = payload.Value
+				valNode.Tag = payload.Tag
+				valNode.Style = payload.Style
 			} else {
 				if err := walkYamlDecrypt(valNode, decryptFn); err != nil {
 					return err
@@ -214,27 +215,22 @@ func (y *YamlFormatter) Extract(content []byte, path string, decryptFn func(stri
 	if cur.Kind != yaml.ScalarNode {
 		return nil, notScalar(path)
 	}
-	if isEncryptedYamlScalar(cur.Value) {
-		typedPayload := strings.HasPrefix(cur.Value, yamlScalarEnvelopePrefix)
-		envelope := strings.TrimPrefix(cur.Value, yamlScalarEnvelopePrefix)
-		plain, err := decryptFn(envelope)
+	encrypted, err := envelope.Check(cur.Value)
+	if err != nil {
+		return nil, err
+	}
+	if encrypted {
+		plain, err := decryptFn(cur.Value)
 		if err != nil {
 			return nil, err
 		}
-		if typedPayload {
-			payload, err := decodeYamlScalarPayload(plain)
-			if err != nil {
-				return nil, err
-			}
-			return []byte(payload.Value), nil
+		payload, err := decodeYamlScalarPayload(plain)
+		if err != nil {
+			return nil, err
 		}
-		return plain, nil
+		return []byte(payload.Value), nil
 	}
 	return []byte(cur.Value), nil
-}
-
-func isEncryptedYamlScalar(value string) bool {
-	return strings.HasPrefix(value, yamlScalarEnvelopePrefix+crypto.Prefix) || strings.HasPrefix(value, crypto.Prefix)
 }
 
 func decodeYamlScalarPayload(plain []byte) (yamlScalarPayload, error) {

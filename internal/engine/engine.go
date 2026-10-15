@@ -271,35 +271,31 @@ func rekey(cfg *config.Config, saveConfig bool) error {
 			return nil
 		}
 
-		formatter, err := formats.Get(rule.Type)
-		if err != nil {
-			return fmt.Errorf("failed rekeying %s: %w", path, err)
-		}
-
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("failed reading %s: %w", path, err)
 		}
 
-		// Skip files that are not encrypted
-		if !strings.Contains(string(content), crypto.Prefix) {
+		// Only rekey actual envelopes in configured encrypted fields. This
+		// avoids treating comments and unrelated plaintext as ciphertext.
+		hasEncrypted, err := formats.HasEncrypted(rule.Type, content, rule.EncryptedKeys)
+		if err != nil {
+			return fmt.Errorf("failed checking envelopes in %s for rekey: %w", path, err)
+		}
+		if !hasEncrypted {
 			return nil
 		}
 
-		// 1. Decrypt in-memory
-		decrypted, err := formatter.Decrypt(content, func(s string) ([]byte, error) {
-			return crypto.Decrypt(s, privKey)
-		})
+		rekeyed, err := formats.Rekey(rule.Type, content, rule.EncryptedKeys,
+			func(s string) ([]byte, error) {
+				return crypto.Decrypt(s, privKey)
+			},
+			func(b []byte) (string, error) {
+				return crypto.Encrypt(b, cfg.Keys())
+			},
+		)
 		if err != nil {
-			return fmt.Errorf("failed decrypting %s for rekey: %w", path, err)
-		}
-
-		// 2. Re-encrypt with brand new DEK for updated recipients
-		rekeyed, err := formatter.Encrypt(decrypted, rule.EncryptedKeys, func(b []byte) (string, error) {
-			return crypto.Encrypt(b, cfg.Keys())
-		})
-		if err != nil {
-			return fmt.Errorf("failed re-encrypting %s: %w", path, err)
+			return fmt.Errorf("failed rekeying %s: %w", path, err)
 		}
 
 		info, err := d.Info()

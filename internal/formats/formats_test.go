@@ -1,25 +1,46 @@
 package formats_test
 
 import (
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/ynotnauk/cloak/internal/crypto"
+	"github.com/ynotnauk/cloak/internal/envelope"
 	"github.com/ynotnauk/cloak/internal/formats"
 	"gopkg.in/yaml.v3"
 )
 
-// Mock crypto functions using current crypto.Prefix
+// mockEncrypt produces a structurally valid envelope whose "ciphertext" is the
+// plaintext followed by a dummy tag, so formatter tests exercise real validation.
 func mockEncrypt(b []byte) (string, error) {
-	return crypto.Prefix + "mock:" + string(b), nil
+	env := &envelope.Envelope{
+		IV:   make([]byte, envelope.IVSize),
+		Data: append(append([]byte{}, b...), make([]byte, envelope.TagSize)...),
+		Wraps: []envelope.Wrap{{
+			EphemeralPub: make([]byte, envelope.PubKeySize),
+			IV:           make([]byte, envelope.IVSize),
+			Key:          make([]byte, envelope.WrappedSize),
+		}},
+	}
+	return env.String(), nil
 }
 
 func mockDecrypt(s string) ([]byte, error) {
-	return []byte(strings.TrimPrefix(s, crypto.Prefix+"mock:")), nil
+	env, err := envelope.Parse(s)
+	if err != nil {
+		return nil, err
+	}
+	return env.Data[:len(env.Data)-envelope.TagSize], nil
+}
+
+func mockEnv(plain string) string {
+	s, _ := mockEncrypt([]byte(plain))
+	return s
+}
+
+func yamlPayload(value string) string {
+	return `{"tag":"!!str","style":0,"value":"` + value + `"}`
 }
 
 func TestEnvFormatter(t *testing.T) {
@@ -34,7 +55,7 @@ func TestEnvFormatter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(string(enc), "PASSWORD="+crypto.Prefix+"mock:secret123") {
+	if strings.Contains(string(enc), "secret123") || !strings.Contains(string(enc), "PASSWORD=CLOAK[v1,") {
 		t.Fatalf("expected encrypted PASSWORD, got:\n%s", string(enc))
 	}
 
@@ -48,6 +69,63 @@ func TestEnvFormatter(t *testing.T) {
 	}
 }
 
+func TestEnvFormatterSupportsValuesOverScannerLimit(t *testing.T) {
+	plain := strings.Repeat("x", 70*1024)
+	ciphertext := mockEnv(plain)
+	content := []byte("PASSWORD=" + ciphertext + "\n")
+	if len(ciphertext) <= 64*1024 {
+		t.Fatalf("test envelope is only %d bytes", len(ciphertext))
+	}
+
+	formatter := &formats.EnvFormatter{}
+	for name, run := range map[string]func() error{
+		"encrypt": func() error {
+			_, err := formatter.Encrypt(content, []string{"PASSWORD"}, func([]byte) (string, error) {
+				t.Fatal("valid existing envelope should not be encrypted again")
+				return "", nil
+			})
+			if err != nil {
+				return err
+			}
+			_, err = formatter.Encrypt([]byte("PASSWORD="+plain), []string{"PASSWORD"}, mockEncrypt)
+			return err
+		},
+		"decrypt": func() error {
+			got, err := formatter.Decrypt(content, mockDecrypt)
+			if err == nil && !strings.Contains(string(got), plain) {
+				t.Fatal("decrypted value does not contain the large plaintext")
+			}
+			return err
+		},
+		"extract": func() error {
+			got, err := formatter.Extract(content, "PASSWORD", mockDecrypt)
+			if err == nil && string(got) != plain {
+				t.Fatal("extracted value does not match the large plaintext")
+			}
+			return err
+		},
+		"has encrypted": func() error {
+			found, err := formats.HasEncrypted("env", content, []string{"PASSWORD"})
+			if err == nil && !found {
+				t.Fatal("large envelope was not detected")
+			}
+			return err
+		},
+		"rekey": func() error {
+			got, err := formats.Rekey("env", content, []string{"PASSWORD"}, mockDecrypt, mockEncrypt)
+			if err == nil && !strings.HasPrefix(string(got), "PASSWORD=CLOAK[v1,") {
+				t.Fatal("large envelope was not rekeyed")
+			}
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := run(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 func TestFullFormatter(t *testing.T) {
 	input := []byte("plain text content")
 	formatter, err := formats.Get("full")
@@ -75,20 +153,20 @@ func TestExtract(t *testing.T) {
 		name, format, input, path, want string
 		wantErr                         bool
 	}{
-		{"yaml nested encrypted", "yaml", "db:\n  password: " + crypto.Prefix + "mock:s3cret\n", "db.password", "s3cret", false},
+		{"yaml nested encrypted", "yaml", "db:\n  password: " + mockEnv(yamlPayload("s3cret")) + "\n", "db.password", "s3cret", false},
 		{"yaml plaintext", "yaml", "app: web\n", "app", "web", false},
-		{"yaml sequence", "yaml", "servers:\n  - token: " + crypto.Prefix + "mock:abc\n", "servers.0.token", "abc", false},
+		{"yaml sequence", "yaml", "servers:\n  - token: " + mockEnv(yamlPayload("abc")) + "\n", "servers.0.token", "abc", false},
 		{"yaml missing", "yaml", "app: web\n", "nope", "", true},
 		{"yaml map is not scalar", "yaml", "db:\n  a: 1\n", "db", "", true},
-		{"json nested", "json", `{"db":{"password":"` + crypto.Prefix + `mock:pw"}}`, "db.password", "pw", false},
+		{"json nested", "json", `{"db":{"password":"` + mockEnv("pw") + `"}}`, "db.password", "pw", false},
 		{"json number", "json", `{"replicas":3}`, "replicas", "3", false},
 		{"json array", "json", `{"a":["x","y"]}`, "a.1", "y", false},
 		{"json missing", "json", `{"a":1}`, "b", "", true},
 		{"json object is not scalar", "json", `{"a":{"b":1}}`, "a", "", true},
-		{"env encrypted", "env", "APP=web\nPASSWORD=" + crypto.Prefix + "mock:pw\n", "PASSWORD", "pw", false},
+		{"env encrypted", "env", "APP=web\nPASSWORD=" + mockEnv("pw") + "\n", "PASSWORD", "pw", false},
 		{"env plaintext", "env", "APP=web\n", "APP", "web", false},
 		{"env missing", "env", "APP=web\n", "NOPE", "", true},
-		{"full unsupported", "full", crypto.Prefix + "mock:x\n", "any", "", true},
+		{"full unsupported", "full", mockEnv("x") + "\n", "any", "", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -191,121 +269,6 @@ func TestYAMLFormatterPreservesScalarTypes(t *testing.T) {
 	}
 }
 
-func TestYAMLDecryptSupportsLegacyCiphertext(t *testing.T) {
-	f, err := formats.Get("yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte("password: " + crypto.Prefix + "mock:12345\n")
-	decrypted, err := f.Decrypt(input, mockDecrypt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var document yaml.Node
-	if err := yaml.Unmarshal(decrypted, &document); err != nil {
-		t.Fatal(err)
-	}
-	value := document.Content[0].Content[1]
-	if value.Tag != "!!str" || value.Value != "12345" {
-		t.Fatalf("legacy scalar = tag %q, value %q; want string %q", value.Tag, value.Value, "12345")
-	}
-}
-
-func TestYAMLDecryptPreservesLegacyPayloadPrefixAsString(t *testing.T) {
-	f, err := formats.Get("yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyValues := []string{
-		"\x00cloak:yaml:v1:not-json",
-		"\x00cloak:yaml:v1:{\"tag\":\"!!int\",\"style\":0,\"value\":\"123\"}",
-	}
-	for i, value := range legacyValues {
-		t.Run(fmt.Sprintf("legacy-%d", i), func(t *testing.T) {
-			ciphertext, err := mockEncrypt([]byte(value))
-			if err != nil {
-				t.Fatal(err)
-			}
-			input, err := yaml.Marshal(map[string]string{"password": ciphertext})
-			if err != nil {
-				t.Fatal(err)
-			}
-			decrypted, err := f.Decrypt(input, mockDecrypt)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var document yaml.Node
-			if err := yaml.Unmarshal(decrypted, &document); err != nil {
-				t.Fatal(err)
-			}
-			scalar := document.Content[0].Content[1]
-			if scalar.Tag != "!!str" || scalar.Value != value {
-				t.Fatalf("legacy scalar = tag %q, value %q; want string %q", scalar.Tag, scalar.Value, value)
-			}
-			extracted, err := f.Extract(input, "password", mockDecrypt)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(extracted) != value {
-				t.Fatalf("legacy extracted value = %q, want %q", extracted, value)
-			}
-		})
-	}
-}
-
-func TestYAMLFormatterTreatsOuterMarkerAloneAsPlaintext(t *testing.T) {
-	f, err := formats.Get("yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, value := range []string{"CLOAK:YAML:v1:", "CLOAK:YAML:v1:literal"} {
-		t.Run(value, func(t *testing.T) {
-			input, err := yaml.Marshal(map[string]string{"password": value})
-			if err != nil {
-				t.Fatal(err)
-			}
-			unexpectedDecrypt := func(string) ([]byte, error) {
-				t.Fatal("decryptor called for plaintext")
-				return nil, nil
-			}
-			plain, err := f.Decrypt(input, unexpectedDecrypt)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(plain) != string(input) {
-				t.Fatalf("plaintext changed: got %q, want %q", plain, input)
-			}
-			extracted, err := f.Extract(input, "password", unexpectedDecrypt)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(extracted) != value {
-				t.Fatalf("plaintext extraction = %q, want %q", extracted, value)
-			}
-			encryptCalls := 0
-			encrypted, err := f.Encrypt(input, []string{"password"}, func(payload []byte) (string, error) {
-				encryptCalls++
-				return crypto.Prefix + "mock:" + base64.RawStdEncoding.EncodeToString(payload), nil
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if encryptCalls != 1 || strings.Contains(string(encrypted), "literal") {
-				t.Fatalf("plaintext was not encrypted: calls=%d, output=%q", encryptCalls, encrypted)
-			}
-			decrypted, err := f.Decrypt(encrypted, func(ciphertext string) ([]byte, error) {
-				return base64.RawStdEncoding.DecodeString(strings.TrimPrefix(ciphertext, crypto.Prefix+"mock:"))
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(decrypted) != string(input) {
-				t.Fatalf("round trip = %q, want %q", decrypted, input)
-			}
-		})
-	}
-}
-
 func TestYAMLDecryptRejectsMalformedTypedPayloads(t *testing.T) {
 	f, err := formats.Get("yaml")
 	if err != nil {
@@ -328,7 +291,7 @@ func TestYAMLDecryptRejectsMalformedTypedPayloads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			input := []byte("password: " + "CLOAK:YAML:v1:" + ciphertext + "\n")
+			input := []byte("password: " + ciphertext + "\n")
 			if _, err := f.Decrypt(input, mockDecrypt); err == nil {
 				t.Fatal("expected malformed payload to fail decryption")
 			}
@@ -348,7 +311,7 @@ func TestYAMLDecryptAcceptsEmptyTypedValueAndZeroStyle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := []byte("password: " + "CLOAK:YAML:v1:" + ciphertext + "\n")
+	input := []byte("password: " + ciphertext + "\n")
 	decrypted, err := f.Decrypt(input, mockDecrypt)
 	if err != nil {
 		t.Fatal(err)
@@ -376,11 +339,10 @@ func TestJsonArrays(t *testing.T) {
 		t.Fatal(err)
 	}
 	encryptFn := func(plain []byte) (string, error) {
-		return crypto.Prefix + "mock:" + base64.RawStdEncoding.EncodeToString(plain), nil
+		return mockEncrypt(plain)
 	}
 	decryptFn := func(ciphertext string) ([]byte, error) {
-		payload := strings.TrimPrefix(ciphertext, crypto.Prefix+"mock:")
-		return base64.RawStdEncoding.DecodeString(payload)
+		return mockDecrypt(ciphertext)
 	}
 
 	for _, input := range []string{
@@ -453,7 +415,7 @@ func TestJSONFormatterPreservesStructureAroundEncryptedValues(t *testing.T) {
 	input := []byte("{\n  \"z\": \"<tag>&\",\n  \"pass\\u0077ord\" : \"<secret &>\",\n  \"a\": 12345678901234567890\n}\n")
 	wantEncrypted := []byte(`{
   "z": "<tag>&",
-  "pass\u0077ord" : "CLOAK:v1:mock:\u0000json:\"<secret &>\"",
+  "pass\u0077ord" : "` + mockEnv("\x00json:\"<secret &>\"") + `",
   "a": 12345678901234567890
 }
 `)
@@ -517,7 +479,7 @@ func TestJSONDecryptSupportsLegacyStringCiphertext(t *testing.T) {
 }
 
 func TestJSONDecryptLeavesArrayElementStringsUntouched(t *testing.T) {
-	input := []byte(`["` + crypto.Prefix + `mock:plain"]`)
+	input := []byte(`["` + mockEnv("plain") + `"]`)
 	f, err := formats.Get("json")
 	if err != nil {
 		t.Fatal(err)
@@ -528,5 +490,143 @@ func TestJSONDecryptLeavesArrayElementStringsUntouched(t *testing.T) {
 	}
 	if string(decrypted) != string(input) {
 		t.Fatalf("array element was unexpectedly decrypted: %s", decrypted)
+	}
+}
+
+func TestPrefixShapedValuesAreRejectedNotSkipped(t *testing.T) {
+	bad := []string{
+		"CLOAK[v1,iv:AAAA]",
+		"CLOAK[v1,iv:",
+		"CLOAK[v2,iv:x,data:y,wrap:a.b.c]",
+		"CLOAK:v1:old",
+		"CLOAK:YAML:v1:old",
+	}
+	cases := map[string]func(v string) string{
+		"yaml": func(v string) string { return "password: '" + v + "'\n" },
+		"json": func(v string) string { return `{"password":"` + v + `"}` },
+		"env":  func(v string) string { return "password=" + v + "\n" },
+		"full": func(v string) string { return v + "\n" },
+	}
+	failEncrypt := func([]byte) (string, error) {
+		t.Fatal("encryptor must not be reached for a reserved-prefix value")
+		return "", nil
+	}
+	for format, build := range cases {
+		f, err := formats.Get(format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range bad {
+			in := []byte(build(v))
+			if _, err := f.Encrypt(in, []string{"password"}, failEncrypt); err == nil {
+				t.Errorf("%s encrypt %q: expected error", format, v)
+			}
+			if _, err := f.Decrypt(in, mockDecrypt); err == nil {
+				t.Errorf("%s decrypt %q: expected error", format, v)
+			}
+		}
+	}
+}
+
+func TestValidEnvelopesAreIdempotentOnEncrypt(t *testing.T) {
+	good := mockEnv(yamlPayload("x"))
+	cases := map[string]string{
+		"yaml": "password: " + good + "\n",
+		"json": `{"password":"` + good + `"}`,
+		"env":  "pass" + "word=" + good + "\n",
+		"full": good + "\n",
+	}
+
+	for format, in := range cases {
+		f, err := formats.Get(format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := f.Encrypt([]byte(in), []string{"password"}, func([]byte) (string, error) {
+			t.Fatal("already-encrypted value was re-encrypted")
+			return "", nil
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+		if format != "yaml" && string(out) != in {
+			t.Errorf("%s: output changed: %q", format, out)
+		}
+	}
+}
+
+func TestHasEncryptedOnlyChecksConfiguredFields(t *testing.T) {
+	ciphertext := mockEnv(yamlPayload("secret"))
+	tests := []struct {
+		format string
+		input  string
+		want   bool
+		err    bool
+	}{
+		{"yaml", "# CLOAK[comment]\nnote: CLOAK[v1,invalid]\n", false, false},
+		{"yaml", "password: " + ciphertext + "\nnote: CLOAK[v1,invalid]\n", true, false},
+		{"yaml", "password: CLOAK[v1,invalid]\n", false, true},
+		{"json", `{"note":"CLOAK[v1,invalid]"}`, false, false},
+		{"json", `{"password":"` + ciphertext + `","note":"CLOAK[v1,invalid]"}`, true, false},
+		{"json", `{"password":"CLOAK[v1,invalid]"}`, false, true},
+		{"env", "PASS" + "WORD=" + ciphertext + "\nnote=CLOAK[v1,invalid]\n", true, false},
+		{"env", "note=CLOAK[v1,invalid]\n", false, false},
+		{"env", "PASS" + "WORD=CLOAK[v1,invalid]\n", false, true},
+		{"full", ciphertext + "\n", true, false},
+		{"full", "CLOAK[v1,invalid]\n", false, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.format+"/"+tc.input, func(t *testing.T) {
+			got, err := formats.HasEncrypted(tc.format, []byte(tc.input), []string{"password", "PASSWORD"})
+			if got != tc.want || (err != nil) != tc.err {
+				t.Fatalf("HasEncrypted = (%v, %v), want (%v, err=%v)", got, err, tc.want, tc.err)
+			}
+		})
+	}
+}
+
+func TestRekeyRotatesOnlyConfiguredEnvelopes(t *testing.T) {
+	unrelated := mockEnv("unrelated")
+	target := mockEnv("target")
+	tests := []struct {
+		format string
+		input  string
+	}{
+		{"yaml", "note: " + unrelated + "\n---\npassword: " + target + "\n"},
+		{"json", `{"note":"` + unrelated + `","nested":{"password":"` + target + `"}}`},
+		{"env", "NOTE=" + unrelated + "\nPASSWORD=" + target + "\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.format, func(t *testing.T) {
+			var nonce byte
+			encrypt := func(plain []byte) (string, error) {
+				value, err := mockEncrypt(plain)
+				if err != nil {
+					return "", err
+				}
+				parsed, err := envelope.Parse(value)
+				if err != nil {
+					return "", err
+				}
+				nonce++
+				parsed.Wraps[0].EphemeralPub[0] = nonce
+				return parsed.String(), nil
+			}
+			out, err := formats.Rekey(tc.format, []byte(tc.input), []string{"password", "PASSWORD"}, mockDecrypt, encrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(out), unrelated) {
+				t.Fatalf("unrelated ciphertext changed:\n%s", out)
+			}
+			if strings.Contains(string(out), target) {
+				t.Fatalf("target ciphertext was not rotated:\n%s", out)
+			}
+			found, err := formats.HasEncrypted(tc.format, out, []string{"password", "PASSWORD"})
+			if err != nil || !found {
+				t.Fatalf("rotated ciphertext not detected: found=%v, err=%v", found, err)
+			}
+		})
 	}
 }
