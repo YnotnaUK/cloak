@@ -128,7 +128,7 @@ The release workflow builds tags from `VERSION`, so this release would be publis
 **Fix:** store and restore the original scalar metadata in new ciphertexts, retaining backward compatibility for old ciphertexts.
 
 ### 13. YAML aliases bypass encryption 🔬
-- [x] Fixed locally: encryption and decryption follow aliases, protecting scalar secrets at their anchor; regression tests cover scalar and nested mapping aliases.
+- [x] Fixed on `fix/yaml-alias-encryption`: encryption, decryption, encrypted-value detection and rekeying follow aliases; extraction resolves aliases safely. Regression tests cover scalar and nested mapping aliases, recipient rotation, and recursive alias errors.
 
 `base: &b supersecret` / `password: *b` stays entirely in plaintext because `AliasNode` is neither encrypted nor followed.
 **Fix:** resolve aliases when walking, or reject aliased values under encrypted keys.
@@ -242,7 +242,7 @@ Every code push to `main` creates a timestamped release, so 20 releases go by qu
 
 - **Round-trip regression coverage** (`encrypt → decrypt == original`) per formatter:
   - [x] Multi-document YAML (`2e5a363`).
-  - [ ] YAML anchors and aliases.
+  - [x] YAML anchors and aliases, including encrypted-value detection and rekeying (`fix/yaml-alias-encryption`).
   - [ ] YAML int/bool/null under encrypted keys.
   - [x] JSON arrays, nested and top-level (`0d38f9d`).
   - [x] JSON null, array and number values under encrypted keys, plus large integers (`8b42484`).

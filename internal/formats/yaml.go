@@ -250,8 +250,10 @@ func (y *YamlFormatter) Extract(content []byte, path string, decryptFn func(stri
 	}
 
 	for _, part := range splitPath(path) {
-		for cur.Kind == yaml.AliasNode && cur.Alias != nil {
-			cur = cur.Alias
+		var err error
+		cur, err = resolveYamlAlias(cur)
+		if err != nil {
+			return nil, fmt.Errorf("failed resolving YAML path %q: %w", path, err)
 		}
 		switch cur.Kind {
 		case yaml.MappingNode:
@@ -277,8 +279,10 @@ func (y *YamlFormatter) Extract(content []byte, path string, decryptFn func(stri
 		}
 	}
 
-	for cur.Kind == yaml.AliasNode && cur.Alias != nil {
-		cur = cur.Alias
+	var err error
+	cur, err = resolveYamlAlias(cur)
+	if err != nil {
+		return nil, fmt.Errorf("failed resolving YAML path %q: %w", path, err)
 	}
 	if cur.Kind != yaml.ScalarNode {
 		return nil, notScalar(path)
