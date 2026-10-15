@@ -84,66 +84,109 @@ func encodeYamlDocs(docs []*yaml.Node) ([]byte, error) {
 }
 
 func walkYamlEncrypt(node *yaml.Node, keys map[string]bool, encryptFn func([]byte) (string, error)) error {
+	return walkYamlEncryptNode(node, keys, encryptFn, make(map[*yaml.Node]bool))
+}
+
+func walkYamlEncryptNode(node *yaml.Node, keys map[string]bool, encryptFn func([]byte) (string, error), visiting map[*yaml.Node]bool) error {
+	if visiting[node] {
+		return fmt.Errorf("YAML alias cycle detected")
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+
 	switch node.Kind {
 	case yaml.MappingNode:
 		for i := 0; i < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
 			valNode := node.Content[i+1]
 
-			if keys[keyNode.Value] && valNode.Kind == yaml.ScalarNode {
-				encrypted, err := envelope.Check(valNode.Value)
+			if keys[keyNode.Value] {
+				target, err := resolveYamlAlias(valNode)
 				if err != nil {
-					return fmt.Errorf("YAML scalar %q: %w", keyNode.Value, err)
+					return fmt.Errorf("YAML key %q: %w", keyNode.Value, err)
 				}
-				if encrypted {
-					continue // Already encrypted
+				if target.Kind == yaml.ScalarNode {
+					if err := encryptYamlScalar(target, keyNode.Value, encryptFn); err != nil {
+						return err
+					}
+					continue
 				}
-
-				payload, err := json.Marshal(struct {
-					Tag   string     `json:"tag"`
-					Style yaml.Style `json:"style"`
-					Value string     `json:"value"`
-				}{Tag: valNode.Tag, Style: valNode.Style, Value: valNode.Value})
-				if err != nil {
-					return fmt.Errorf("failed encoding YAML scalar %q: %w", keyNode.Value, err)
-				}
-				enc, err := encryptFn(payload)
-				if err != nil {
-					return fmt.Errorf("failed encrypting YAML scalar %q: %w", keyNode.Value, err)
-				}
-				valNode.Value = enc
-				valNode.Tag = "!!str"
-			} else {
-				if err := walkYamlEncrypt(valNode, keys, encryptFn); err != nil {
-					return err
-				}
+			}
+			if err := walkYamlEncryptNode(valNode, keys, encryptFn, visiting); err != nil {
+				return err
 			}
 		}
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
-			if err := walkYamlEncrypt(child, keys, encryptFn); err != nil {
+			if err := walkYamlEncryptNode(child, keys, encryptFn, visiting); err != nil {
 				return err
 			}
+		}
+	case yaml.AliasNode:
+		if node.Alias == nil {
+			return fmt.Errorf("YAML alias has no target")
+		}
+		if err := walkYamlEncryptNode(node.Alias, keys, encryptFn, visiting); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
+func encryptYamlScalar(valNode *yaml.Node, key string, encryptFn func([]byte) (string, error)) error {
+	encrypted, err := envelope.Check(valNode.Value)
+	if err != nil {
+		return fmt.Errorf("YAML scalar %q: %w", key, err)
+	}
+	if encrypted {
+		return nil
+	}
+
+	payload, err := json.Marshal(struct {
+		Tag   string     `json:"tag"`
+		Style yaml.Style `json:"style"`
+		Value string     `json:"value"`
+	}{Tag: valNode.Tag, Style: valNode.Style, Value: valNode.Value})
+	if err != nil {
+		return fmt.Errorf("failed encoding YAML scalar %q: %w", key, err)
+	}
+	enc, err := encryptFn(payload)
+	if err != nil {
+		return fmt.Errorf("failed encrypting YAML scalar %q: %w", key, err)
+	}
+	valNode.Value = enc
+	valNode.Tag = "!!str"
+	return nil
+}
+
 func walkYamlDecrypt(node *yaml.Node, decryptFn func(string) ([]byte, error)) error {
+	return walkYamlDecryptNode(node, decryptFn, make(map[*yaml.Node]bool))
+}
+
+func walkYamlDecryptNode(node *yaml.Node, decryptFn func(string) ([]byte, error), visiting map[*yaml.Node]bool) error {
+	if visiting[node] {
+		return fmt.Errorf("YAML alias cycle detected")
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+
 	switch node.Kind {
 	case yaml.MappingNode:
 		for i := 0; i < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
 			valNode := node.Content[i+1]
+			target, err := resolveYamlAlias(valNode)
+			if err != nil {
+				return fmt.Errorf("YAML key %q: %w", keyNode.Value, err)
+			}
 			encrypted := false
-			if valNode.Kind == yaml.ScalarNode {
-				var err error
-				if encrypted, err = envelope.Check(valNode.Value); err != nil {
+			if target.Kind == yaml.ScalarNode {
+				if encrypted, err = envelope.Check(target.Value); err != nil {
 					return fmt.Errorf("YAML scalar %q: %w", keyNode.Value, err)
 				}
 			}
 			if encrypted {
-				dec, err := decryptFn(valNode.Value)
+				dec, err := decryptFn(target.Value)
 				if err != nil {
 					return fmt.Errorf("failed decrypting YAML scalar %q: %w", keyNode.Value, err)
 				}
@@ -151,23 +194,48 @@ func walkYamlDecrypt(node *yaml.Node, decryptFn func(string) ([]byte, error)) er
 				if err != nil {
 					return fmt.Errorf("failed decoding YAML scalar %q: %w", keyNode.Value, err)
 				}
-				valNode.Value = payload.Value
-				valNode.Tag = payload.Tag
-				valNode.Style = payload.Style
+				target.Value = payload.Value
+				target.Tag = payload.Tag
+				target.Style = payload.Style
 			} else {
-				if err := walkYamlDecrypt(valNode, decryptFn); err != nil {
+				if err := walkYamlDecryptNode(valNode, decryptFn, visiting); err != nil {
 					return err
 				}
 			}
 		}
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
-			if err := walkYamlDecrypt(child, decryptFn); err != nil {
+			if err := walkYamlDecryptNode(child, decryptFn, visiting); err != nil {
 				return err
 			}
 		}
+	case yaml.AliasNode:
+		if node.Alias == nil {
+			return fmt.Errorf("YAML alias has no target")
+		}
+		if err := walkYamlDecryptNode(node.Alias, decryptFn, visiting); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func resolveYamlAlias(node *yaml.Node) (*yaml.Node, error) {
+	seen := make(map[*yaml.Node]bool)
+	for node != nil && node.Kind == yaml.AliasNode {
+		if seen[node] {
+			return nil, fmt.Errorf("YAML alias cycle detected")
+		}
+		seen[node] = true
+		if node.Alias == nil {
+			return nil, fmt.Errorf("YAML alias has no target")
+		}
+		node = node.Alias
+	}
+	if node == nil {
+		return nil, fmt.Errorf("YAML alias has no target")
+	}
+	return node, nil
 }
 
 func (y *YamlFormatter) Extract(content []byte, path string, decryptFn func(string) ([]byte, error)) ([]byte, error) {

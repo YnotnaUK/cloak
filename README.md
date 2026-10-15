@@ -36,6 +36,8 @@ instead of being skipped. As a consequence, a plaintext secret that begins with
 - Targeted Key Encryption: Encrypt only specific keys (password, token, etc.) while keeping the rest readable.
 - AST-Preserving YAML: Retains formatting, scalar types, and comments.
   Encrypted scalars preserve their types on decryption.
+- YAML aliases are followed, so encrypting an aliased secret protects the
+  anchor value and every reference to it.
 - Idempotent: Safe to run repeatedly without double-encrypting.
 - Multi-Recipient & Rekeying: Add or remove team members with automatic DEK rotation.
 

@@ -213,6 +213,66 @@ func TestYamlMultiDocument(t *testing.T) {
 	}
 }
 
+func TestYAMLAliasedSecretsAreEncryptedAndDecrypted(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "scalar alias",
+			input: "base: &secret supersecret\npassword: *secret\n",
+		},
+		{
+			name: "mapping alias",
+			input: "base: &config\n" +
+				"  password: supersecret\n" +
+				"copy: *config\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encrypted, err := f.Encrypt([]byte(tc.input), []string{"password"}, mockEncrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encrypted), "supersecret") {
+				t.Fatalf("plaintext secret remains in encrypted YAML:\n%s", encrypted)
+			}
+
+			decrypted, err := f.Decrypt(encrypted, mockDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document yaml.Node
+			if err := yaml.Unmarshal(decrypted, &document); err != nil {
+				t.Fatalf("decrypted YAML %q: %v", decrypted, err)
+			}
+			if tc.name == "scalar alias" {
+				root := document.Content[0]
+				base := root.Content[1]
+				password := root.Content[3]
+				if base.Value != "supersecret" || password.Kind != yaml.AliasNode || password.Alias != base {
+					t.Fatalf("decrypted scalar alias was not preserved: base=%#v password=%#v", base, password)
+				}
+				return
+			}
+
+			root := document.Content[0]
+			base := root.Content[1]
+			copy := root.Content[3]
+			if base.Content[1].Value != "supersecret" ||
+				copy.Kind != yaml.AliasNode ||
+				copy.Alias.Content[1].Value != "supersecret" {
+				t.Fatalf("decrypted mapping alias does not contain the original secret:\n%s", decrypted)
+			}
+		})
+	}
+}
+
 func TestYAMLFormatterPreservesScalarTypes(t *testing.T) {
 	f, err := formats.Get("yaml")
 	if err != nil {
