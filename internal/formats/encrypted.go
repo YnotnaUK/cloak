@@ -109,12 +109,15 @@ func Rekey(formatType string, content []byte, targetKeys []string, decryptFn fun
 }
 
 func yamlHasEncrypted(node *yaml.Node, keys map[string]bool) (bool, error) {
-	return yamlHasEncryptedNode(node, keys, make(map[*yaml.Node]bool))
+	return yamlHasEncryptedNode(node, keys, make(map[*yaml.Node]bool), make(map[*yaml.Node]bool))
 }
 
-func yamlHasEncryptedNode(node *yaml.Node, keys map[string]bool, visiting map[*yaml.Node]bool) (bool, error) {
+func yamlHasEncryptedNode(node *yaml.Node, keys map[string]bool, visiting, completed map[*yaml.Node]bool) (bool, error) {
 	if visiting[node] {
 		return false, fmt.Errorf("YAML alias cycle detected")
+	}
+	if completed[node] {
+		return false, nil
 	}
 	visiting[node] = true
 	defer delete(visiting, node)
@@ -135,14 +138,14 @@ func yamlHasEncryptedNode(node *yaml.Node, keys map[string]bool, visiting map[*y
 					}
 				}
 			}
-			found, err := yamlHasEncryptedNode(value, keys, visiting)
+			found, err := yamlHasEncryptedNode(value, keys, visiting, completed)
 			if err != nil || found {
 				return found, err
 			}
 		}
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
-			found, err := yamlHasEncryptedNode(child, keys, visiting)
+			found, err := yamlHasEncryptedNode(child, keys, visiting, completed)
 			if err != nil || found {
 				return found, err
 			}
@@ -151,21 +154,25 @@ func yamlHasEncryptedNode(node *yaml.Node, keys map[string]bool, visiting map[*y
 		if node.Alias == nil {
 			return false, fmt.Errorf("YAML alias has no target")
 		}
-		found, err := yamlHasEncryptedNode(node.Alias, keys, visiting)
+		found, err := yamlHasEncryptedNode(node.Alias, keys, visiting, completed)
 		if err != nil || found {
 			return found, err
 		}
 	}
+	completed[node] = true
 	return false, nil
 }
 
 func yamlRekey(node *yaml.Node, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error)) error {
-	return yamlRekeyNode(node, keys, decryptFn, encryptFn, make(map[*yaml.Node]bool), make(map[*yaml.Node]bool))
+	return yamlRekeyNode(node, keys, decryptFn, encryptFn, make(map[*yaml.Node]bool), make(map[*yaml.Node]bool), make(map[*yaml.Node]bool))
 }
 
-func yamlRekeyNode(node *yaml.Node, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error), visiting map[*yaml.Node]bool, rekeyed map[*yaml.Node]bool) error {
+func yamlRekeyNode(node *yaml.Node, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error), visiting, rekeyed, completed map[*yaml.Node]bool) error {
 	if visiting[node] {
 		return fmt.Errorf("YAML alias cycle detected")
+	}
+	if completed[node] {
+		return nil
 	}
 	visiting[node] = true
 	defer delete(visiting, node)
@@ -197,13 +204,13 @@ func yamlRekeyNode(node *yaml.Node, keys map[string]bool, decryptFn func(string)
 					}
 				}
 			}
-			if err := yamlRekeyNode(value, keys, decryptFn, encryptFn, visiting, rekeyed); err != nil {
+			if err := yamlRekeyNode(value, keys, decryptFn, encryptFn, visiting, rekeyed, completed); err != nil {
 				return err
 			}
 		}
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
-			if err := yamlRekeyNode(child, keys, decryptFn, encryptFn, visiting, rekeyed); err != nil {
+			if err := yamlRekeyNode(child, keys, decryptFn, encryptFn, visiting, rekeyed, completed); err != nil {
 				return err
 			}
 		}
@@ -211,10 +218,11 @@ func yamlRekeyNode(node *yaml.Node, keys map[string]bool, decryptFn func(string)
 		if node.Alias == nil {
 			return fmt.Errorf("YAML alias has no target")
 		}
-		if err := yamlRekeyNode(node.Alias, keys, decryptFn, encryptFn, visiting, rekeyed); err != nil {
+		if err := yamlRekeyNode(node.Alias, keys, decryptFn, encryptFn, visiting, rekeyed, completed); err != nil {
 			return err
 		}
 	}
+	completed[node] = true
 	return nil
 }
 

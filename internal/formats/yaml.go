@@ -84,12 +84,15 @@ func encodeYamlDocs(docs []*yaml.Node) ([]byte, error) {
 }
 
 func walkYamlEncrypt(node *yaml.Node, keys map[string]bool, encryptFn func([]byte) (string, error)) error {
-	return walkYamlEncryptNode(node, keys, encryptFn, make(map[*yaml.Node]bool))
+	return walkYamlEncryptNode(node, keys, encryptFn, make(map[*yaml.Node]bool), make(map[*yaml.Node]bool))
 }
 
-func walkYamlEncryptNode(node *yaml.Node, keys map[string]bool, encryptFn func([]byte) (string, error), visiting map[*yaml.Node]bool) error {
+func walkYamlEncryptNode(node *yaml.Node, keys map[string]bool, encryptFn func([]byte) (string, error), visiting, completed map[*yaml.Node]bool) error {
 	if visiting[node] {
 		return fmt.Errorf("YAML alias cycle detected")
+	}
+	if completed[node] {
+		return nil
 	}
 	visiting[node] = true
 	defer delete(visiting, node)
@@ -112,13 +115,13 @@ func walkYamlEncryptNode(node *yaml.Node, keys map[string]bool, encryptFn func([
 					continue
 				}
 			}
-			if err := walkYamlEncryptNode(valNode, keys, encryptFn, visiting); err != nil {
+			if err := walkYamlEncryptNode(valNode, keys, encryptFn, visiting, completed); err != nil {
 				return err
 			}
 		}
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
-			if err := walkYamlEncryptNode(child, keys, encryptFn, visiting); err != nil {
+			if err := walkYamlEncryptNode(child, keys, encryptFn, visiting, completed); err != nil {
 				return err
 			}
 		}
@@ -126,10 +129,11 @@ func walkYamlEncryptNode(node *yaml.Node, keys map[string]bool, encryptFn func([
 		if node.Alias == nil {
 			return fmt.Errorf("YAML alias has no target")
 		}
-		if err := walkYamlEncryptNode(node.Alias, keys, encryptFn, visiting); err != nil {
+		if err := walkYamlEncryptNode(node.Alias, keys, encryptFn, visiting, completed); err != nil {
 			return err
 		}
 	}
+	completed[node] = true
 	return nil
 }
 
@@ -160,12 +164,15 @@ func encryptYamlScalar(valNode *yaml.Node, key string, encryptFn func([]byte) (s
 }
 
 func walkYamlDecrypt(node *yaml.Node, decryptFn func(string) ([]byte, error)) error {
-	return walkYamlDecryptNode(node, decryptFn, make(map[*yaml.Node]bool))
+	return walkYamlDecryptNode(node, decryptFn, make(map[*yaml.Node]bool), make(map[*yaml.Node]bool))
 }
 
-func walkYamlDecryptNode(node *yaml.Node, decryptFn func(string) ([]byte, error), visiting map[*yaml.Node]bool) error {
+func walkYamlDecryptNode(node *yaml.Node, decryptFn func(string) ([]byte, error), visiting, completed map[*yaml.Node]bool) error {
 	if visiting[node] {
 		return fmt.Errorf("YAML alias cycle detected")
+	}
+	if completed[node] {
+		return nil
 	}
 	visiting[node] = true
 	defer delete(visiting, node)
@@ -198,14 +205,14 @@ func walkYamlDecryptNode(node *yaml.Node, decryptFn func(string) ([]byte, error)
 				target.Tag = payload.Tag
 				target.Style = payload.Style
 			} else {
-				if err := walkYamlDecryptNode(valNode, decryptFn, visiting); err != nil {
+				if err := walkYamlDecryptNode(valNode, decryptFn, visiting, completed); err != nil {
 					return err
 				}
 			}
 		}
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
-			if err := walkYamlDecryptNode(child, decryptFn, visiting); err != nil {
+			if err := walkYamlDecryptNode(child, decryptFn, visiting, completed); err != nil {
 				return err
 			}
 		}
@@ -213,10 +220,11 @@ func walkYamlDecryptNode(node *yaml.Node, decryptFn func(string) ([]byte, error)
 		if node.Alias == nil {
 			return fmt.Errorf("YAML alias has no target")
 		}
-		if err := walkYamlDecryptNode(node.Alias, decryptFn, visiting); err != nil {
+		if err := walkYamlDecryptNode(node.Alias, decryptFn, visiting, completed); err != nil {
 			return err
 		}
 	}
+	completed[node] = true
 	return nil
 }
 

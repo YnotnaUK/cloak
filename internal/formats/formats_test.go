@@ -2,6 +2,7 @@ package formats_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -370,6 +371,48 @@ func TestYAMLRecursiveAliasesReturnErrors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if err := run(); err == nil {
 				t.Fatal("expected recursive alias to return an error")
+			}
+		})
+	}
+}
+
+func TestYAMLSharedAliasesDoNotCauseExponentialTraversal(t *testing.T) {
+	var input strings.Builder
+	input.WriteString("base: &base\n  value: plain\n")
+	previous := "base"
+	for i := 0; i < 28; i++ {
+		name := fmt.Sprintf("level%d", i)
+		fmt.Fprintf(&input, "%s: &%s [*%s, *%s]\n", name, name, previous, previous)
+		previous = name
+	}
+	content := []byte(input.String())
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := map[string]func() error{
+		"encrypt": func() error {
+			_, err := f.Encrypt(content, []string{"missing"}, mockEncrypt)
+			return err
+		},
+		"decrypt": func() error {
+			_, err := f.Decrypt(content, mockDecrypt)
+			return err
+		},
+		"encrypted detection": func() error {
+			_, err := formats.HasEncrypted("yaml", content, []string{"missing"})
+			return err
+		},
+		"rekey": func() error {
+			_, err := formats.Rekey("yaml", content, []string{"missing"}, mockDecrypt, mockEncrypt)
+			return err
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := run(); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
