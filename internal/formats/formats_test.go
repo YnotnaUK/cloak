@@ -2,6 +2,7 @@ package formats_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -210,6 +211,210 @@ func TestYamlMultiDocument(t *testing.T) {
 	}
 	if string(dec) != string(input) {
 		t.Fatalf("round trip mismatch:\n%s", dec)
+	}
+}
+
+func TestYAMLAliasedSecretsAreEncryptedAndDecrypted(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "scalar alias",
+			input: "base: &secret supersecret\npassword: *secret\n",
+		},
+		{
+			name: "mapping alias",
+			input: "base: &config\n" +
+				"  password: supersecret\n" +
+				"copy: *config\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encrypted, err := f.Encrypt([]byte(tc.input), []string{"password"}, mockEncrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encrypted), "supersecret") {
+				t.Fatalf("plaintext secret remains in encrypted YAML:\n%s", encrypted)
+			}
+
+			decrypted, err := f.Decrypt(encrypted, mockDecrypt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document yaml.Node
+			if err := yaml.Unmarshal(decrypted, &document); err != nil {
+				t.Fatalf("decrypted YAML %q: %v", decrypted, err)
+			}
+			if tc.name == "scalar alias" {
+				root := document.Content[0]
+				base := root.Content[1]
+				password := root.Content[3]
+				if base.Value != "supersecret" || password.Kind != yaml.AliasNode || password.Alias != base {
+					t.Fatalf("decrypted scalar alias was not preserved: base=%#v password=%#v", base, password)
+				}
+				return
+			}
+
+			root := document.Content[0]
+			base := root.Content[1]
+			copy := root.Content[3]
+			if base.Content[1].Value != "supersecret" ||
+				copy.Kind != yaml.AliasNode ||
+				copy.Alias.Content[1].Value != "supersecret" {
+				t.Fatalf("decrypted mapping alias does not contain the original secret:\n%s", decrypted)
+			}
+		})
+	}
+}
+
+func TestYAMLAliasedSecretsAreDetectedAndRekeyed(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("base: &secret supersecret\npassword: *secret\n")
+	encrypted, err := f.Encrypt(input, []string{"password"}, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := formats.HasEncrypted("yaml", encrypted, []string{"password"})
+	if err != nil || !found {
+		t.Fatalf("aliased ciphertext not detected: found=%v, err=%v", found, err)
+	}
+	extracted, err := f.Extract(encrypted, "password", mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(extracted) != "supersecret" {
+		t.Fatalf("extracted aliased secret = %q, want %q", extracted, "supersecret")
+	}
+
+	var encryptedDoc yaml.Node
+	if err := yaml.Unmarshal(encrypted, &encryptedDoc); err != nil {
+		t.Fatal(err)
+	}
+	oldCiphertext := encryptedDoc.Content[0].Content[1].Value
+	var nonce byte
+	rekeyed, err := formats.Rekey("yaml", encrypted, []string{"password"}, mockDecrypt, func(plain []byte) (string, error) {
+		value, err := mockEncrypt(plain)
+		if err != nil {
+			return "", err
+		}
+		parsed, err := envelope.Parse(value)
+		if err != nil {
+			return "", err
+		}
+		nonce++
+		parsed.Wraps[0].EphemeralPub[0] = nonce
+		return parsed.String(), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonce != 1 {
+		t.Fatalf("rekeyed aliased scalar %d times, want once", nonce)
+	}
+	if strings.Contains(string(rekeyed), oldCiphertext) {
+		t.Fatalf("aliased ciphertext was not rotated:\n%s", rekeyed)
+	}
+	found, err = formats.HasEncrypted("yaml", rekeyed, []string{"password"})
+	if err != nil || !found {
+		t.Fatalf("rotated aliased ciphertext not detected: found=%v, err=%v", found, err)
+	}
+	decrypted, err := f.Decrypt(rekeyed, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(decrypted), "supersecret") || !strings.Contains(string(decrypted), "*secret") {
+		t.Fatalf("rekeyed alias did not round-trip:\n%s", decrypted)
+	}
+}
+
+func TestYAMLRecursiveAliasesReturnErrors(t *testing.T) {
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte("a: &a [*a]\n")
+
+	tests := map[string]func() error{
+		"encrypt": func() error {
+			_, err := f.Encrypt(input, []string{"password"}, mockEncrypt)
+			return err
+		},
+		"decrypt": func() error {
+			_, err := f.Decrypt(input, mockDecrypt)
+			return err
+		},
+		"encrypted detection": func() error {
+			_, err := formats.HasEncrypted("yaml", input, []string{"password"})
+			return err
+		},
+		"rekey": func() error {
+			_, err := formats.Rekey("yaml", input, []string{"password"}, mockDecrypt, mockEncrypt)
+			return err
+		},
+		"extract": func() error {
+			_, err := f.Extract(input, "a.0", mockDecrypt)
+			return err
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := run(); err == nil {
+				t.Fatal("expected recursive alias to return an error")
+			}
+		})
+	}
+}
+
+func TestYAMLSharedAliasesDoNotCauseExponentialTraversal(t *testing.T) {
+	var input strings.Builder
+	input.WriteString("base: &base\n  value: plain\n")
+	previous := "base"
+	for i := 0; i < 28; i++ {
+		name := fmt.Sprintf("level%d", i)
+		fmt.Fprintf(&input, "%s: &%s [*%s, *%s]\n", name, name, previous, previous)
+		previous = name
+	}
+	content := []byte(input.String())
+	f, err := formats.Get("yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := map[string]func() error{
+		"encrypt": func() error {
+			_, err := f.Encrypt(content, []string{"missing"}, mockEncrypt)
+			return err
+		},
+		"decrypt": func() error {
+			_, err := f.Decrypt(content, mockDecrypt)
+			return err
+		},
+		"encrypted detection": func() error {
+			_, err := formats.HasEncrypted("yaml", content, []string{"missing"})
+			return err
+		},
+		"rekey": func() error {
+			_, err := formats.Rekey("yaml", content, []string{"missing"}, mockDecrypt, mockEncrypt)
+			return err
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := run(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
