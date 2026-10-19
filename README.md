@@ -348,6 +348,10 @@ rules:
       - SECRET_KEY
 ```
 
+`.env` rules match both `NAME=value` and `export NAME=value` assignments.
+Encryption, decryption, and rekeying preserve assignment whitespace and LF or
+CRLF line endings.
+
 ---
 
 ## CLI Reference

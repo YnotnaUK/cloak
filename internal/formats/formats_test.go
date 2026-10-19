@@ -70,6 +70,98 @@ func TestEnvFormatter(t *testing.T) {
 	}
 }
 
+func TestEnvFormatterPreservesExportSpacingAndLineEndings(t *testing.T) {
+	input := []byte("# config\r\n  export\tPASSWORD \t= \tsecret123  \r\nOTHER = unchanged\r\nLAST=no-newline")
+	formatter := &formats.EnvFormatter{}
+
+	encrypted, err := formatter.Encrypt(input, []string{"PASSWORD"}, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encrypted), "secret123") {
+		t.Fatal("encrypted output still contains the plaintext value")
+	}
+	if !strings.Contains(string(encrypted), "  export\tPASSWORD \t= \t") || !strings.Contains(string(encrypted), "  \r\nOTHER = unchanged\r\nLAST=no-newline") {
+		t.Fatalf("encryption changed assignment formatting or line endings:\n%s", encrypted)
+	}
+
+	found, err := formats.HasEncrypted("env", encrypted, []string{"PASSWORD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("exported encrypted value was not detected")
+	}
+
+	extracted, err := formatter.Extract(encrypted, "PASSWORD", mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(extracted) != "secret123" {
+		t.Fatalf("extracted value = %q, want %q", extracted, "secret123")
+	}
+
+	plainExtracted, err := formatter.Extract(input, "PASSWORD", mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(plainExtracted) != "secret123" {
+		t.Fatalf("plaintext extracted value = %q, want %q", plainExtracted, "secret123")
+	}
+
+	decrypted, err := formatter.Decrypt(encrypted, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decrypted) != string(input) {
+		t.Fatalf("decrypt round trip changed the input:\n got: %q\nwant: %q", decrypted, input)
+	}
+
+	rotated, err := mockEncrypt([]byte("rotated"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rekeyed, err := formats.Rekey("env", encrypted, []string{"PASSWORD"}, mockDecrypt, func(plain []byte) (string, error) {
+		if string(plain) != "secret123" {
+			t.Fatalf("rekey plaintext = %q, want %q", plain, "secret123")
+		}
+		return rotated, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rekeyed), "  export\tPASSWORD \t= \t"+rotated+"  \r\n") {
+		t.Fatalf("rekey changed assignment formatting or line endings:\n%s", rekeyed)
+	}
+}
+
+func TestEnvFormatterSupportsLongLines(t *testing.T) {
+	input := []byte("export PASSWORD=" + strings.Repeat("x", 70*1024))
+	formatter := &formats.EnvFormatter{}
+
+	encrypted, err := formatter.Encrypt(input, []string{"PASSWORD"}, mockEncrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encrypted), string(input[len("export PASSWORD="):])) {
+		t.Fatal("encrypted long-line output still contains the plaintext value")
+	}
+	found, err := formats.HasEncrypted("env", encrypted, []string{"PASSWORD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("long encrypted value was not detected")
+	}
+	decrypted, err := formatter.Decrypt(encrypted, mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decrypted) != string(input) {
+		t.Fatal("long-line encrypt/decrypt round trip changed the input")
+	}
+}
+
 func TestEnvFormatterSupportsValuesOverScannerLimit(t *testing.T) {
 	plain := strings.Repeat("x", 70*1024)
 	ciphertext := mockEnv(plain)
