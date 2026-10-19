@@ -38,23 +38,19 @@ func HasEncrypted(formatType string, content []byte, targetKeys []string) (bool,
 		}
 		return jsonHasEncrypted(value, keySet)
 	case "env":
-		scanner := newEnvScanner(content)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" || strings.HasPrefix(line, "#") {
+		for _, line := range splitEnvLines(content) {
+			if isEnvCommentOrEmpty(line.text) {
 				continue
 			}
-			key, value, ok := strings.Cut(line, "=")
-			if !ok || !keySet[strings.TrimSpace(key)] {
+			assignment, ok := parseEnvAssignment(line.text)
+			if !ok || !keySet[assignment.key] {
 				continue
 			}
-			found, err := checkEnvelope(strings.TrimSpace(value))
+			value := line.text[assignment.valueStart:assignment.valueEnd]
+			found, err := checkEnvelope(string(value))
 			if err != nil || found {
 				return found, err
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			return false, err
 		}
 		return false, nil
 	case "full":
@@ -282,47 +278,39 @@ func rekeyJSON(content []byte, keys map[string]bool, decryptFn func(string) ([]b
 }
 
 func rekeyEnv(content []byte, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error)) ([]byte, error) {
-	scanner := newEnvScanner(content)
 	var out bytes.Buffer
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
-			out.WriteString(line)
-			out.WriteByte('\n')
+	for _, line := range splitEnvLines(content) {
+		if isEnvCommentOrEmpty(line.text) {
+			writeEnvLine(&out, line, line.text)
 			continue
 		}
-		key, value, ok := strings.Cut(line, "=")
-		key = strings.TrimSpace(key)
-		if !ok || !keys[key] {
-			out.WriteString(line)
-			out.WriteByte('\n')
+		assignment, ok := parseEnvAssignment(line.text)
+		if !ok || !keys[assignment.key] {
+			writeEnvLine(&out, line, line.text)
 			continue
 		}
-		value = strings.TrimSpace(value)
-		found, err := checkEnvelope(value)
+		value := line.text[assignment.valueStart:assignment.valueEnd]
+		found, err := checkEnvelope(string(value))
 		if err != nil {
-			return nil, fmt.Errorf("key %s: %w", key, err)
+			return nil, fmt.Errorf("key %s: %w", assignment.key, err)
 		}
 		if !found {
-			out.WriteString(line)
-			out.WriteByte('\n')
+			writeEnvLine(&out, line, line.text)
 			continue
 		}
-		plain, err := decryptFn(value)
+		plain, err := decryptFn(string(value))
 		if err != nil {
-			return nil, fmt.Errorf("failed decrypting key %s for rekey: %w", key, err)
+			return nil, fmt.Errorf("failed decrypting key %s for rekey: %w", assignment.key, err)
 		}
 		ciphertext, err := encryptFn(plain)
 		if err != nil {
-			return nil, fmt.Errorf("failed re-encrypting key %s: %w", key, err)
+			return nil, fmt.Errorf("failed re-encrypting key %s: %w", assignment.key, err)
 		}
-		out.WriteString(key)
-		out.WriteByte('=')
-		out.WriteString(ciphertext)
-		out.WriteByte('\n')
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+		updated := make([]byte, 0, len(line.text)+len(ciphertext)-len(value))
+		updated = append(updated, line.text[:assignment.valueStart]...)
+		updated = append(updated, ciphertext...)
+		updated = append(updated, line.text[assignment.valueEnd:]...)
+		writeEnvLine(&out, line, updated)
 	}
 	return out.Bytes(), nil
 }
