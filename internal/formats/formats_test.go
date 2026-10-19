@@ -97,8 +97,16 @@ func TestEnvFormatterPreservesExportSpacingAndLineEndings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(extracted) != " \tsecret123  " {
-		t.Fatalf("extracted value = %q, want %q", extracted, " \tsecret123  ")
+	if string(extracted) != "secret123" {
+		t.Fatalf("extracted value = %q, want %q", extracted, "secret123")
+	}
+
+	plainExtracted, err := formatter.Extract(input, "PASSWORD", mockDecrypt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(plainExtracted) != "secret123" {
+		t.Fatalf("plaintext extracted value = %q, want %q", plainExtracted, "secret123")
 	}
 
 	decrypted, err := formatter.Decrypt(encrypted, mockDecrypt)

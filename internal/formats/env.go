@@ -107,18 +107,9 @@ func (e *EnvFormatter) Extract(content []byte, path string, decryptFn func(strin
 			return nil, fmt.Errorf("key %s: %w", assignment.key, err)
 		}
 		if !encrypted {
-			return append([]byte(nil), line.text[bytes.IndexByte(line.text, '=')+1:]...), nil
+			return append([]byte(nil), value...), nil
 		}
-		decVal, err := decryptFn(string(value))
-		if err != nil {
-			return nil, fmt.Errorf("failed decrypting key %s: %w", assignment.key, err)
-		}
-		result := make([]byte, 0, len(line.text)-assignment.valueEnd+assignment.valueStart+len(decVal))
-		equals := bytes.IndexByte(line.text, '=')
-		result = append(result, line.text[equals+1:assignment.valueStart]...)
-		result = append(result, decVal...)
-		result = append(result, line.text[assignment.valueEnd:]...)
-		return result, nil
+		return decryptFn(string(value))
 	}
 	return nil, notFound(path)
 }
