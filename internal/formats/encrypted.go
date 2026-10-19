@@ -109,64 +109,120 @@ func Rekey(formatType string, content []byte, targetKeys []string, decryptFn fun
 }
 
 func yamlHasEncrypted(node *yaml.Node, keys map[string]bool) (bool, error) {
+	return yamlHasEncryptedNode(node, keys, make(map[*yaml.Node]bool), make(map[*yaml.Node]bool))
+}
+
+func yamlHasEncryptedNode(node *yaml.Node, keys map[string]bool, visiting, completed map[*yaml.Node]bool) (bool, error) {
+	if visiting[node] {
+		return false, fmt.Errorf("YAML alias cycle detected")
+	}
+	if completed[node] {
+		return false, nil
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+
 	switch node.Kind {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			key, value := node.Content[i], node.Content[i+1]
-			if value.Kind == yaml.ScalarNode && keys[key.Value] {
-				found, err := checkEnvelope(value.Value)
-				if err != nil || found {
-					return found, err
+			if keys[key.Value] {
+				target, err := resolveYamlAlias(value)
+				if err != nil {
+					return false, fmt.Errorf("YAML key %q: %w", key.Value, err)
+				}
+				if target.Kind == yaml.ScalarNode {
+					found, err := checkEnvelope(target.Value)
+					if err != nil || found {
+						return found, err
+					}
 				}
 			}
-			found, err := yamlHasEncrypted(value, keys)
+			found, err := yamlHasEncryptedNode(value, keys, visiting, completed)
 			if err != nil || found {
 				return found, err
 			}
 		}
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
-			found, err := yamlHasEncrypted(child, keys)
+			found, err := yamlHasEncryptedNode(child, keys, visiting, completed)
 			if err != nil || found {
 				return found, err
 			}
 		}
+	case yaml.AliasNode:
+		if node.Alias == nil {
+			return false, fmt.Errorf("YAML alias has no target")
+		}
+		found, err := yamlHasEncryptedNode(node.Alias, keys, visiting, completed)
+		if err != nil || found {
+			return found, err
+		}
 	}
+	completed[node] = true
 	return false, nil
 }
 
 func yamlRekey(node *yaml.Node, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error)) error {
+	return yamlRekeyNode(node, keys, decryptFn, encryptFn, make(map[*yaml.Node]bool), make(map[*yaml.Node]bool), make(map[*yaml.Node]bool))
+}
+
+func yamlRekeyNode(node *yaml.Node, keys map[string]bool, decryptFn func(string) ([]byte, error), encryptFn func([]byte) (string, error), visiting, rekeyed, completed map[*yaml.Node]bool) error {
+	if visiting[node] {
+		return fmt.Errorf("YAML alias cycle detected")
+	}
+	if completed[node] {
+		return nil
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+
 	switch node.Kind {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			key, value := node.Content[i], node.Content[i+1]
-			if keys[key.Value] && value.Kind == yaml.ScalarNode {
-				found, err := checkEnvelope(value.Value)
+			if keys[key.Value] {
+				target, err := resolveYamlAlias(value)
 				if err != nil {
-					return fmt.Errorf("YAML scalar %q: %w", key.Value, err)
+					return fmt.Errorf("YAML key %q: %w", key.Value, err)
 				}
-				if found {
-					plain, err := decryptFn(value.Value)
+				if target.Kind == yaml.ScalarNode && !rekeyed[target] {
+					found, err := checkEnvelope(target.Value)
 					if err != nil {
-						return fmt.Errorf("failed decrypting YAML scalar %q for rekey: %w", key.Value, err)
+						return fmt.Errorf("YAML scalar %q: %w", key.Value, err)
 					}
-					value.Value, err = encryptFn(plain)
-					if err != nil {
-						return fmt.Errorf("failed re-encrypting YAML scalar %q: %w", key.Value, err)
+					if found {
+						plain, err := decryptFn(target.Value)
+						if err != nil {
+							return fmt.Errorf("failed decrypting YAML scalar %q for rekey: %w", key.Value, err)
+						}
+						target.Value, err = encryptFn(plain)
+						if err != nil {
+							return fmt.Errorf("failed re-encrypting YAML scalar %q: %w", key.Value, err)
+						}
+						rekeyed[target] = true
 					}
 				}
 			}
-			if err := yamlRekey(value, keys, decryptFn, encryptFn); err != nil {
+			if err := yamlRekeyNode(value, keys, decryptFn, encryptFn, visiting, rekeyed, completed); err != nil {
 				return err
 			}
 		}
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
-			if err := yamlRekey(child, keys, decryptFn, encryptFn); err != nil {
+			if err := yamlRekeyNode(child, keys, decryptFn, encryptFn, visiting, rekeyed, completed); err != nil {
 				return err
 			}
 		}
+	case yaml.AliasNode:
+		if node.Alias == nil {
+			return fmt.Errorf("YAML alias has no target")
+		}
+		if err := yamlRekeyNode(node.Alias, keys, decryptFn, encryptFn, visiting, rekeyed, completed); err != nil {
+			return err
+		}
 	}
+	completed[node] = true
 	return nil
 }
 
